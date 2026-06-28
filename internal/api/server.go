@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"api-gateway/internal/alert"
+	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/iam"
@@ -22,11 +23,13 @@ type Server struct {
 	alerts  *alert.Engine
 	catalog *discovery.Catalog
 	users   *iam.Store
+	audit   *audit.Store
 }
 
-// NewServer creates a new admin API server. users may be nil if forensic_dsn is
-// unset — in that case only the legacy bearer/secret login is available.
-func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog, users *iam.Store) *Server {
+// NewServer creates a new admin API server. users / auditStore may be nil if
+// forensic_dsn is unset — in that case only the legacy bearer/secret login is
+// available and the admin audit trail is not persisted.
+func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog, users *iam.Store, auditStore *audit.Store) *Server {
 	s := &Server{
 		mux:     http.NewServeMux(),
 		store:   st,
@@ -36,13 +39,14 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 		alerts:  alerts,
 		catalog: catalog,
 		users:   users,
+		audit:   auditStore,
 	}
 	s.registerRoutes()
 	return s
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users}
+	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users, audit: s.audit}
 	// Assign the spec interface only for a real catalog, so a nil *discovery.
 	// Catalog does not become a non-nil interface holding a typed-nil pointer.
 	if s.catalog != nil {
@@ -82,6 +86,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("PUT /api/discovery/spec", h.putSpec)
 	s.mux.HandleFunc("DELETE /api/discovery/spec", h.deleteSpec)
 	s.mux.HandleFunc("GET /api/discovery/drift", h.getDrift)
+
+	// Admin action audit trail (per-tenant; super-admin can span with ?all=true).
+	s.mux.HandleFunc("GET /api/audit", h.getAudit)
 
 	// IP management
 	s.mux.HandleFunc("GET /api/blocked-ips", h.getBlockedIPs)

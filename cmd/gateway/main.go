@@ -13,6 +13,7 @@ import (
 
 	"api-gateway/internal/alert"
 	"api-gateway/internal/api"
+	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/forensic"
@@ -144,6 +145,21 @@ func main() {
 		}
 	}
 
+	// ── Audit log (admin action trail) ────────────────────────────────────────
+	// Shares the forensic PostgreSQL instance. Without it, admin actions are only
+	// in the application log (not durable / queryable / tenant-scoped).
+	var auditStore *audit.Store
+	if cfg.ForensicDSN != "" {
+		auditStore, err = audit.New(cfg.ForensicDSN, log)
+		if err != nil {
+			log.Error("audit store init failed (admin action trail disabled)", map[string]any{"error": err.Error()})
+			auditStore = nil
+		} else {
+			defer func() { _ = auditStore.Close() }()
+			log.Info("admin audit log enabled", map[string]any{"backend": "postgresql"})
+		}
+	}
+
 	// ── Build Handler Chain ───────────────────────────────────────────────────
 	var activeHandler atomic.Value
 	handler, gw, err := buildHandlerChain(cfg, log, st, alerts, catalog, postureEng)
@@ -175,7 +191,13 @@ func main() {
 	}
 
 	// ── Admin API Server ──────────────────────────────────────────────────────
-	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore)
+	// Assign the audit recorder only for a real store, so a nil *audit.Store does
+	// not become a non-nil interface holding a typed-nil pointer.
+	var auditRec audit.Recorder
+	if auditStore != nil {
+		auditRec = auditStore
+	}
+	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore)
 
 	// FIX SEC: Protect admin API against brute force and DDoS
 	adminRateLimit := config.RateLimitConfig{
@@ -212,7 +234,7 @@ func main() {
 		// credential, so a limiter placed inside it would never see unauthenticated
 		// brute-force / DDoS traffic — exactly what this limit is meant to absorb.
 		middleware.RateLimit(adminRateLimit, "admin", log, st),
-		middleware.AdminAuth(cfg, log, st),
+		middleware.AdminAuth(cfg, log, st, auditRec),
 		middleware.CORS(cfg.Security.CORS),
 	)
 	adminServer := &http.Server{

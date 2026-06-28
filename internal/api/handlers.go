@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"api-gateway/internal/alert"
+	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/iam"
@@ -30,7 +31,8 @@ type handlers struct {
 	// so the spec handlers are testable with a fake (no PostgreSQL). It is left
 	// nil when discovery is disabled; spec handlers then degrade to 503.
 	specCat specOps
-	users   *iam.Store // optional: nil when forensic_dsn is unset
+	users   *iam.Store   // optional: nil when forensic_dsn is unset
+	audit   *audit.Store // optional: nil when forensic_dsn is unset
 }
 
 // requireAuth is a defence-in-depth check called directly inside mutating

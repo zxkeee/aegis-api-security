@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"api-gateway/internal/audit"
 	"api-gateway/internal/iam"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/tenant"
@@ -84,6 +85,11 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 			fields["tenant"] = tnt
 		}
 		h.log.Warn("admin_login_failed", fields)
+		h.audit.Record(audit.Entry{
+			TenantID: tnt, ActorEmail: req.Email, Action: "login_failed",
+			Method: r.Method, Path: r.URL.Path, Status: http.StatusUnauthorized,
+			IP: ip, Detail: method,
+		})
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 	}
 
@@ -148,6 +154,11 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
+	h.audit.Record(audit.Entry{
+		TenantID: sess.TenantID, ActorID: sess.UserID, ActorEmail: sess.Email,
+		Role: string(sess.Role), SuperAdmin: sess.SuperAdmin, Action: "login",
+		Method: r.Method, Path: r.URL.Path, Status: http.StatusOK, IP: ip,
+	})
 
 	secure := !h.cfg.AdminCookieInsecure
 	maxAge := int(h.cfg.AdminSessionTTL / time.Second)

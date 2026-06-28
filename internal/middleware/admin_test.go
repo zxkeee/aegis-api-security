@@ -4,19 +4,106 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
+	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/iam"
 	"api-gateway/internal/tenant"
 )
 
+// fakeAudit collects recorded entries for assertions.
+type fakeAudit struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (f *fakeAudit) Record(e audit.Entry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = append(f.entries, e)
+}
+
+func (f *fakeAudit) actions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, e := range f.entries {
+		out = append(out, e.Action)
+	}
+	return out
+}
+
+func hasAction(actions []string, want string) bool {
+	for _, a := range actions {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// AdminAuth records a persistent audit entry for mutations and for access-control
+// denials, but not for ordinary reads.
+func TestAdminAudit_RecordsMutationsAndDenials(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	cfg := config.GatewayConfig{AdminAuth: true, AdminSecret: testSecret}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	aud := &fakeAudit{}
+	h := AdminAuth(cfg, fakeLogger{}, &fakeStore{}, aud)(next)
+
+	// Successful bearer mutation -> "mutation".
+	if code := doAdmin(h, http.MethodPost, "/api/x", func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+testSecret)
+	}); code != http.StatusOK {
+		t.Fatalf("bearer mutation: got %d", code)
+	}
+	// Bearer GET read -> not recorded (signal-rich audit).
+	if code := doAdmin(h, http.MethodGet, "/api/x", func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+testSecret)
+	}); code != http.StatusOK {
+		t.Fatalf("bearer read: got %d", code)
+	}
+	// No credentials -> "denied:admin_no_auth".
+	if code := doAdmin(h, http.MethodGet, "/api/x", nil); code != http.StatusUnauthorized {
+		t.Fatalf("no-auth: got %d", code)
+	}
+	// Bad bearer -> "denied:admin_bad_secret".
+	if code := doAdmin(h, http.MethodPost, "/api/x", func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer wrong")
+	}); code != http.StatusForbidden {
+		t.Fatalf("bad bearer: got %d", code)
+	}
+
+	got := aud.actions()
+	if !hasAction(got, "mutation") {
+		t.Errorf("expected a mutation entry, got %v", got)
+	}
+	if !hasAction(got, "denied:admin_no_auth") {
+		t.Errorf("expected denied:admin_no_auth, got %v", got)
+	}
+	if !hasAction(got, "denied:admin_bad_secret") {
+		t.Errorf("expected denied:admin_bad_secret, got %v", got)
+	}
+	// The GET read must NOT have produced a mutation/extra access record.
+	mutations := 0
+	for _, a := range got {
+		if a == "mutation" {
+			mutations++
+		}
+	}
+	if mutations != 1 {
+		t.Errorf("expected exactly 1 mutation record (read not audited), got %d in %v", mutations, got)
+	}
+}
+
 func adminHandler(st Store) http.Handler {
 	_ = InitTrustedProxies(nil)
 	cfg := config.GatewayConfig{AdminAuth: true, AdminSecret: testSecret}
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	return AdminAuth(cfg, fakeLogger{}, st)(next)
+	return AdminAuth(cfg, fakeLogger{}, st, nil)(next)
 }
 
 func doAdmin(h http.Handler, method, path string, mutate func(*http.Request)) int {
@@ -46,7 +133,7 @@ func TestAdmin_RateLimitWrapsAuth(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	rl := config.RateLimitConfig{Enabled: true, Requests: 3, Window: time.Minute}
 	// Same nesting as cmd/gateway/main.go: RateLimit outermost, then AdminAuth.
-	h := Chain(next, RateLimit(rl, "test", fakeLogger{}, st), AdminAuth(cfg, fakeLogger{}, st))
+	h := Chain(next, RateLimit(rl, "test", fakeLogger{}, st), AdminAuth(cfg, fakeLogger{}, st, nil))
 
 	var got429 bool
 	for i := 0; i < 6; i++ {
@@ -150,7 +237,7 @@ func captureCtxHandler(t *testing.T, st Store) (http.Handler, *iam.Role, *string
 		tid = tenant.From(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	return AdminAuth(cfg, fakeLogger{}, st)(next), &role, &tid
+	return AdminAuth(cfg, fakeLogger{}, st, nil)(next), &role, &tid
 }
 
 func TestAdmin_SessionThreadsTenantAndRole(t *testing.T) {

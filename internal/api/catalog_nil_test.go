@@ -43,6 +43,7 @@ func TestCatalog_NilDegradesTo503(t *testing.T) {
 		{"report", h.getReport, "/api/report", nil},
 		{"spec-meta", h.getSpec, "/api/discovery/spec", nil},
 		{"drift", h.getDrift, "/api/discovery/drift", nil},
+		{"audit", h.getAudit, "/api/audit", nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

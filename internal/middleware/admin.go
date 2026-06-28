@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/iam"
 	"api-gateway/internal/tenant"
@@ -28,7 +29,7 @@ const (
 //     the X-CSRF-Token header (defence against cross-site request forgery).
 //
 // Public routes (no auth): GET /, /health, /readyz, and POST /api/login.
-func AdminAuth(cfg config.GatewayConfig, log Logger, st Store) Middleware {
+func AdminAuth(cfg config.GatewayConfig, log Logger, st Store, aud audit.Recorder) Middleware {
 	secretBytes := []byte(cfg.AdminSecret)
 
 	return func(next http.Handler) http.Handler {
@@ -59,10 +60,13 @@ func AdminAuth(cfg config.GatewayConfig, log Logger, st Store) Middleware {
 					ctx := tenant.With(r.Context(), tenant.Default)
 					ctx = iam.WithRole(ctx, iam.RoleAdmin)
 					ctx = iam.WithSuperAdmin(ctx, true)
-					auditAdmin(log, r)
-					next.ServeHTTP(w, r.WithContext(ctx))
+					serveAndAudit(aud, next, w, r.WithContext(ctx), audit.Entry{
+						TenantID: tenant.Default, ActorID: "bearer", ActorEmail: "bearer",
+						Role: string(iam.RoleAdmin), SuperAdmin: true,
+					})
 					return
 				}
+				recordDeny(aud, r, "admin_bad_secret", http.StatusForbidden, audit.Entry{})
 				SecurityDeny(w, r, log, st, "admin_bad_secret", RealIP(r), http.StatusForbidden, nil)
 				return
 			}
@@ -70,6 +74,7 @@ func AdminAuth(cfg config.GatewayConfig, log Logger, st Store) Middleware {
 			// Method 2: session cookie (browser console).
 			cookie, err := r.Cookie(SessionCookie)
 			if err != nil || cookie.Value == "" {
+				recordDeny(aud, r, "admin_no_auth", http.StatusUnauthorized, audit.Entry{})
 				SecurityDeny(w, r, log, st, "admin_no_auth", RealIP(r), http.StatusUnauthorized, nil)
 				return
 			}
@@ -80,18 +85,25 @@ func AdminAuth(cfg config.GatewayConfig, log Logger, st Store) Middleware {
 				return
 			}
 			if !ok {
+				recordDeny(aud, r, "admin_bad_session", http.StatusUnauthorized, audit.Entry{})
 				SecurityDeny(w, r, log, st, "admin_bad_session", RealIP(r), http.StatusUnauthorized, nil)
 				return
+			}
+			actor := audit.Entry{
+				TenantID: sess.TenantID, ActorID: sess.UserID, ActorEmail: sess.Email,
+				Role: string(sess.Role), SuperAdmin: sess.SuperAdmin,
 			}
 			// CSRF check on state-changing methods (double-submit bound to session).
 			if isMutating(r.Method) {
 				if subtle.ConstantTimeCompare([]byte(r.Header.Get(CSRFHeader)), []byte(sess.CSRF)) != 1 {
+					recordDeny(aud, r, "admin_csrf_failed", http.StatusForbidden, actor)
 					SecurityDeny(w, r, log, st, "admin_csrf_failed", RealIP(r), http.StatusForbidden, nil)
 					return
 				}
 				// RBAC: viewer may read but never mutate. Returning 403 (not 401)
 				// signals "authenticated, but lacks permission".
 				if !sess.Role.CanMutate() {
+					recordDeny(aud, r, "admin_viewer_forbidden", http.StatusForbidden, actor)
 					SecurityDeny(w, r, log, st, "admin_viewer_forbidden", RealIP(r), http.StatusForbidden,
 						map[string]any{"role": string(sess.Role), "tenant": sess.TenantID})
 					return
@@ -105,10 +117,42 @@ func AdminAuth(cfg config.GatewayConfig, log Logger, st Store) Middleware {
 			ctx = iam.WithRole(ctx, sess.Role)
 			ctx = iam.WithSuperAdmin(ctx, sess.SuperAdmin)
 			ctx = iam.WithUserID(ctx, sess.UserID)
-			auditAdmin(log, r)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			serveAndAudit(aud, next, w, r.WithContext(ctx), actor)
 		})
 	}
+}
+
+// serveAndAudit serves the request and, for state-changing methods, records a
+// persistent audit entry with the final response status. Read (GET/HEAD)
+// requests are not recorded to keep the audit log signal-rich; the application
+// log still notes every access.
+func serveAndAudit(aud audit.Recorder, next http.Handler, w http.ResponseWriter, r *http.Request, actor audit.Entry) {
+	if aud == nil || !isMutating(r.Method) {
+		next.ServeHTTP(w, r)
+		return
+	}
+	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	next.ServeHTTP(sw, r)
+	actor.Action = "mutation"
+	actor.Method = r.Method
+	actor.Path = r.URL.Path
+	actor.Status = sw.status
+	actor.IP = RealIP(r)
+	aud.Record(actor)
+}
+
+// recordDeny records an access-control rejection (best-effort). actor may be
+// empty when the caller could not be identified (no/invalid credentials).
+func recordDeny(aud audit.Recorder, r *http.Request, reason string, status int, actor audit.Entry) {
+	if aud == nil {
+		return
+	}
+	actor.Action = "denied:" + reason
+	actor.Method = r.Method
+	actor.Path = r.URL.Path
+	actor.Status = status
+	actor.IP = RealIP(r)
+	aud.Record(actor)
 }
 
 func isMutating(method string) bool {
@@ -117,12 +161,4 @@ func isMutating(method string) bool {
 		return true
 	}
 	return false
-}
-
-func auditAdmin(log Logger, r *http.Request) {
-	log.Info("admin_access", map[string]any{
-		"path":   r.URL.Path,
-		"method": r.Method,
-		"ip":     RealIP(r),
-	})
 }
