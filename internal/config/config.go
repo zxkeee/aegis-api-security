@@ -5,12 +5,21 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// tenantIDPattern constrains tenant ids to a safe charset. This is a hard
+// isolation requirement, not cosmetics: Redis keys are built as
+// "gw:t:<tenant>:<suffix>", so a ':' in a tenant id would let one tenant's
+// keyspace overlap another's (e.g. id "a:x" + suffix "y" collides with id "a" +
+// suffix "x:y"). Restricting to [A-Za-z0-9._-] makes the keyspaces provably
+// disjoint. See the property test in internal/store.
+var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // PathHasPrefix reports whether path is covered by the prefix on a path-segment
 // boundary. Unlike a raw strings.HasPrefix, "/public" matches "/public" and
@@ -481,6 +490,9 @@ func validateMultitenancy(cfg GatewayConfig) error {
 		}
 		if t.ID == DefaultTenant {
 			return fmt.Errorf("multitenancy: tenant id %q is reserved", DefaultTenant)
+		}
+		if !tenantIDPattern.MatchString(t.ID) {
+			return fmt.Errorf("multitenancy: tenant id %q is invalid (allowed: letters, digits, '.', '_', '-'; 1-64 chars) — other characters can break key isolation", t.ID)
 		}
 		if ids[t.ID] {
 			return fmt.Errorf("multitenancy: duplicate tenant id %q", t.ID)
