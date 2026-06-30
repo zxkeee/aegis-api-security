@@ -124,7 +124,7 @@ func RemotePeerTrusted(r *http.Request) bool {
 
 // SecurityDeny logs, records metrics/forensics, and responds with an error.
 func SecurityDeny(w http.ResponseWriter, r *http.Request,
-	log Logger, st Store,
+	log Logger, st DenySink,
 	reason, ip string, code int, extra map[string]any) {
 
 	log.BlockEvent(reason, ip, r.URL.Path, r.Method, extra)

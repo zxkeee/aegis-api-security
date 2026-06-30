@@ -23,7 +23,7 @@ import (
 // propagated by the JWT middleware, so it must run AFTER authentication. In the
 // default detect-only mode it records events without disrupting traffic; in
 // block mode it denies the offending request.
-func AbuseDetection(cfg config.AbuseConfig, log Logger, st Store) Middleware {
+func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}
@@ -178,7 +178,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st Store) Middleware {
 // recordAbuse logs an abuse event and persists it to forensics WITHOUT denying
 // the request (detect-only mode). Mirrors SecurityDeny's side effects minus the
 // HTTP error, so detected-but-allowed events still appear in the console.
-func recordAbuse(r *http.Request, log Logger, st Store, reason, ip string, extra map[string]any) {
+func recordAbuse(r *http.Request, log Logger, st DenySink, reason, ip string, extra map[string]any) {
 	log.BlockEvent(reason, ip, r.URL.Path, r.Method, extra)
 	st.IncrMetric(r.Context(), "abuse_"+reason)
 	st.PushForensic(r.Context(), store.ForensicEntry{

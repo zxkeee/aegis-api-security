@@ -40,7 +40,7 @@ type tenantRoute struct {
 //
 // With multi-tenancy disabled this is a near-passthrough that pins every request
 // to config.DefaultTenant (legacy single-tenant behaviour).
-func TenantResolve(cfg config.MultitenancyConfig, routes []config.RouteConfig, log Logger, st Store) Middleware {
+func TenantResolve(cfg config.MultitenancyConfig, routes []config.RouteConfig, log Logger, st MetricsSink) Middleware {
 	if !cfg.Enabled {
 		return func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

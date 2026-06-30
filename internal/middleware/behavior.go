@@ -15,7 +15,7 @@ import (
 //
 // This means an IP that has built up a high score is blocked on the CURRENT request,
 // not only on the next one (which was the previous reactive behaviour).
-func BehaviorAnalysis(cfg config.BehaviorConfig, log Logger, st Store) Middleware {
+func BehaviorAnalysis(cfg config.BehaviorConfig, log Logger, st behaviorStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}

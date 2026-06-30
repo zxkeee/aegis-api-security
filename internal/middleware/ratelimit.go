@@ -12,7 +12,7 @@ import (
 // limiters (e.g. the admin-plane 5/s limit and the gateway 100/60s limit) never
 // share a bucket for the same IP — previously both wrote gw:t:<tenant>:rate:<ip>,
 // so whichever incremented first set the window TTL and both behaved wrongly.
-func RateLimit(cfg config.RateLimitConfig, scope string, log Logger, st Store) Middleware {
+func RateLimit(cfg config.RateLimitConfig, scope string, log Logger, st rateLimitStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}
@@ -31,7 +31,7 @@ func RateLimit(cfg config.RateLimitConfig, scope string, log Logger, st Store) M
 // a route can raise/lower its own requests/window or disable limiting entirely.
 // resolve returns the effective config, a stable route key (for counter
 // isolation between routes), and whether limiting applies to the path.
-func RouteRateLimit(resolve func(path string) (cfg config.RateLimitConfig, routeKey string, enabled bool), log Logger, st Store) Middleware {
+func RouteRateLimit(resolve func(path string) (cfg config.RateLimitConfig, routeKey string, enabled bool), log Logger, st rateLimitStore) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cfg, routeKey, enabled := resolve(r.URL.Path)
@@ -64,7 +64,7 @@ func rateKey(scope, routeKey string, cfg config.RateLimitConfig, ip string) stri
 // applyRateLimit performs one increment-and-check against the store, writing the
 // 429 (or fail-closed 503) itself and returning false when the request must be
 // stopped. It returns true when the caller should continue the chain.
-func applyRateLimit(w http.ResponseWriter, r *http.Request, cfg config.RateLimitConfig, key string, log Logger, st Store) bool {
+func applyRateLimit(w http.ResponseWriter, r *http.Request, cfg config.RateLimitConfig, key string, log Logger, st rateLimitStore) bool {
 	ip := RealIP(r)
 	count, err := st.IncrRate(r.Context(), key, cfg.Window)
 	if err != nil {

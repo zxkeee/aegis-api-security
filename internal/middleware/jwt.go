@@ -24,7 +24,7 @@ import (
 type JWTAuth struct {
 	cfg    config.AuthConfig
 	log    Logger
-	st     Store
+	st     RevocationChecker
 	jwks   keyfunc.Keyfunc
 	jwksMu sync.RWMutex
 }
@@ -32,7 +32,7 @@ type JWTAuth struct {
 // NewJWTAuth creates a new JWT authentication middleware instance.
 // If JWKS URL is configured, it fetches public keys for RSA/ECDSA validation.
 // Otherwise, falls back to HMAC shared-secret validation.
-func NewJWTAuth(cfg config.AuthConfig, log Logger, st Store) *JWTAuth {
+func NewJWTAuth(cfg config.AuthConfig, log Logger, st RevocationChecker) *JWTAuth {
 	ja := &JWTAuth{cfg: cfg, log: log, st: st}
 
 	if cfg.JWKSURL != "" {

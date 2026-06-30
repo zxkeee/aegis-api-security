@@ -13,7 +13,7 @@ import (
 
 // WAF provides Web Application Firewall protection using Coraza (OWASP CRS).
 // Protects against: SQL Injection, XSS, RCE, LFI, SSRF, XXE, Log4Shell, and more.
-func WAF(cfg config.WAFConfig, log Logger, st Store) Middleware {
+func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}

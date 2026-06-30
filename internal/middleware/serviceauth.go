@@ -11,7 +11,7 @@ import (
 )
 
 // ServiceAuth validates HMAC signatures for service-to-service communication.
-func ServiceAuth(cfg config.RegistryConfig, log Logger, st Store, reg RegistryProvider) Middleware {
+func ServiceAuth(cfg config.RegistryConfig, log Logger, st DenySink, reg RegistryProvider) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 // BotProtection detects and blocks automated traffic using JA3 fingerprinting.
-func BotProtection(cfg config.BotConfig, log Logger, st Store) Middleware {
+func BotProtection(cfg config.BotConfig, log Logger, st botStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}

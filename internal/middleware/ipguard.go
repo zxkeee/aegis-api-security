@@ -7,7 +7,7 @@ import (
 )
 
 // IPGuard enforces IP whitelist/blacklist rules.
-func IPGuard(cfg config.IPGuardConfig, log Logger, st Store) Middleware {
+func IPGuard(cfg config.IPGuardConfig, log Logger, st ipGuardStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}

@@ -11,7 +11,7 @@ import (
 )
 
 // Challenge presents a JavaScript challenge to suspicious clients.
-func Challenge(cfg config.ChallengeConfig, log Logger, st Store) Middleware {
+func Challenge(cfg config.ChallengeConfig, log Logger, st ChallengeStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}

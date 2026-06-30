@@ -19,7 +19,7 @@ import (
 const dlpMaxBuffer = 4 << 20 // 4 MB
 
 // DLP provides Data Loss Prevention by masking sensitive data in responses.
-func DLP(cfg config.DLPConfig, log Logger, st Store) Middleware {
+func DLP(cfg config.DLPConfig, log Logger, st MetricsSink) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}

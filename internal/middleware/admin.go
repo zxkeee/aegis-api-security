@@ -29,7 +29,7 @@ const (
 //     the X-CSRF-Token header (defence against cross-site request forgery).
 //
 // Public routes (no auth): GET /, /health, /readyz, and POST /api/login.
-func AdminAuth(cfg config.GatewayConfig, log Logger, st Store, aud audit.Recorder) Middleware {
+func AdminAuth(cfg config.GatewayConfig, log Logger, st adminStore, aud audit.Recorder) Middleware {
 	secretBytes := []byte(cfg.AdminSecret)
 
 	return func(next http.Handler) http.Handler {

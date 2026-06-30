@@ -17,7 +17,7 @@ import (
 // refuse the ambiguous request outright: in a normalised API path a ".." segment
 // or an encoded separator has no legitimate use and is a classic policy-bypass
 // vector. This must run early — ahead of auth, routing and the WAF.
-func PathSanity(log Logger, st Store) Middleware {
+func PathSanity(log Logger, st DenySink) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if reason := unsafePath(r); reason != "" {
