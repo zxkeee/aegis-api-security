@@ -21,6 +21,10 @@ go mod download
 # Установите обязательные инструменты для разработки
 go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 go install golang.org/x/tools/cmd/goimports@latest
+
+# Установите git-хуки (pre-commit ловит случайно закоммиченные бинарники).
+# Обязательно: core.hooksPath — локальный конфиг, в репозиторий не уезжает.
+make hooks
 ```
 
 ### 2. Создание ветки для работы
