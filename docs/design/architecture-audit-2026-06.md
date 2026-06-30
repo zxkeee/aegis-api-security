@@ -80,14 +80,17 @@ Redis-стор связан с доменным типом identity.
 - **Фикс:** довести до интерфейса только если будет второй источник discovery
   (out-of-band сенсор, B1). Сейчас — YAGNI, просто зафиксировать.
 
-### F5 — `cmd/gateway/main.go` несёт и composition root, и build-логику цепочки
+### F5 — `cmd/gateway/main.go` нёс и composition root, и build-логику · ✅ СДЕЛАНО
 
-`main.go` (563 стр.) делает wiring зависимостей **и** содержит
-`buildHandlerChain` + хелперы `anyRoute*`. Composition root разрастается.
-
-- **Фикс:** вынести `buildHandlerChain` и `anyRoute*`-хелперы в
-  `internal/gateway/chain.go` (или `internal/bootstrap`), оставив в `main.go`
-  только запуск/shutdown/wiring. Риск: низкий, улучшает тестируемость цепочки.
+- **Сделано:** `buildHandlerChain` + `passthroughMW` + `anyRoute*`-хелперы
+  вынесены в новый пакет `internal/gateway` (`BuildHandlerChain`). Порядок
+  цепочки переоформлен как проверяемые данные (`[]step{name, mw}`), а
+  `chain_test.go` пинит его golden-тестом — случайный реордер теперь падает в CI,
+  а не в проде (это и есть «отсутствие багов»). `main.go`: 563 → 433 строки.
+  Параметр `st` типизирован интерфейсом `middleware.Store`, поэтому
+  `gateway` **не** зависит от конкретного `store` (deps: config/discovery/logger/
+  middleware/proxy), а тест собирает цепочку с `nil`-store без живого Redis.
+  Заодно убран мёртвый параметр `alerts` (не использовался в сборке цепочки).
 
 ## 3. План рефакторинга (последовательность)
 

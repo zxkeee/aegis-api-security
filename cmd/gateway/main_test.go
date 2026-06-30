@@ -8,6 +8,7 @@ import (
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/gateway"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/store"
@@ -59,9 +60,9 @@ func TestChain_PostureMatchesEnforcement(t *testing.T) {
 
 	log := logger.New("error")
 	postureEng := discovery.NewPostureEngine(cfg)
-	handler, _, err := buildHandlerChain(cfg, log, st, nil, nil, postureEng)
+	handler, _, err := gateway.BuildHandlerChain(cfg, log, st, nil, postureEng)
 	if err != nil {
-		t.Fatalf("buildHandlerChain: %v", err)
+		t.Fatalf("BuildHandlerChain: %v", err)
 	}
 
 	// /secure: posture reports auth as required (here "partial" — only auth is on)
