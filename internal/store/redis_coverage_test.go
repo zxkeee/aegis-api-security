@@ -189,8 +189,12 @@ func TestStore_TrackObjectAccess(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 	// Distinct object IDs accumulate; a repeat does not inflate the count.
-	st.TrackObjectAccess(ctx, "consumer", "GET /u/{id}", "1", time.Minute)
-	st.TrackObjectAccess(ctx, "consumer", "GET /u/{id}", "2", time.Minute)
+	if _, err := st.TrackObjectAccess(ctx, "consumer", "GET /u/{id}", "1", time.Minute); err != nil {
+		t.Fatalf("TrackObjectAccess: %v", err)
+	}
+	if _, err := st.TrackObjectAccess(ctx, "consumer", "GET /u/{id}", "2", time.Minute); err != nil {
+		t.Fatalf("TrackObjectAccess: %v", err)
+	}
 	n, err := st.TrackObjectAccess(ctx, "consumer", "GET /u/{id}", "2", time.Minute)
 	if err != nil {
 		t.Fatalf("TrackObjectAccess: %v", err)
