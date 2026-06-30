@@ -29,3 +29,8 @@ jobs:
 
       - name: Run golangci-lint
         run: golangci-lint run --timeout 5m ./...
+
+      # Guard against accidentally committing compiled artifacts (e.g. the 8 MB
+      # loadgen binary that once sat untracked in the repo root).
+      - name: Check for committed binaries
+        run: ./scripts/check-no-binaries.sh
