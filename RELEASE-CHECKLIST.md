@@ -119,6 +119,14 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       RLS; validated on the home-server containers.
 
 ### P2
+- [~] **Admin audit log** (enterprise/compliance table-stake). Done: `internal/audit`
+      persists every control-plane action (login/login_failed/logout/mutation/
+      `denied:<reason>`) to PostgreSQL via an async best-effort writer that never
+      blocks the admin request path; entries carry actor/role/super-admin/tenant/
+      method/path/status/ip. `AdminAuth` records; `GET /api/audit` reads,
+      tenant-scoped (super-admin spans all with `?all=true`). Remaining:
+      retention/rollup, data-residency, export, and an RLS policy on
+      `admin_audit_log` (today it is application-scoped only).
 - [ ] Multi-tenancy (organisations, per-tenant data isolation).
 - [ ] Anomaly detection / behavioural baselines per consumer.
 - [ ] Out-of-band deployment (traffic mirroring) in addition to inline.

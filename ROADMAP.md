@@ -19,6 +19,7 @@ API Security (Akamai / Salt / Noname). Оценка основана на фак
 - ✅ WAF на Coraza (🟡 12 самописных правил, не полный OWASP CRS)
 - ✅ Hot-reload конфига, graceful shutdown
 - ✅ Forensic-логи в PostgreSQL (батчинг)
+- ✅ Audit log админ-действий в PostgreSQL (`internal/audit`, async; `GET /api/audit`)
 
 ### API Security слой
 - ✅ Пассивный discovery с нормализацией путей (`/users/42` → `/users/{id}`)
@@ -156,7 +157,7 @@ auth/без, с PII/без). Это готовый фундамент для:
 |---|---|
 | E1. Мультитенантность (организации, изоляция по tenant) | 4–6 нед |
 | E2. SSO (OIDC/SAML) + SCIM + RBAC + MFA | 4–6 нед |
-| E3. Audit log, retention/residency | 2–3 нед |
+| E3. Audit log 🟡 v1, retention/residency | Сделано: пакет `internal/audit` — персистентный лог админ-действий в PostgreSQL (`admin_audit_log`, та же БД, что forensic/catalog). `AdminAuth` пишет login/login_failed/logout/mutation/`denied:<reason>` через async best-effort writer (буфер 4096, неблокирующий путь запроса); запись несёт actor/role/super_admin/tenant/method/path/status/ip. Чтение `GET /api/audit` скоупится по tenant сессии, super-admin спанит все через `?all=true`. Осталось: retention/rollup, data-residency, экспорт, RLS-политика на `admin_audit_log` (пока изоляция на уровне приложения). | 2–3 нед |
 | E4. Лицензирование/метеринг/тарифы | 2–3 нед |
 | E5. SOC2/ISO (процесс, не код) | месяцы |
 
