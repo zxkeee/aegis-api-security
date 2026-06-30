@@ -4,8 +4,10 @@ import (
 	"net/http"
 
 	"api-gateway/internal/alert"
+	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/store"
@@ -20,10 +22,14 @@ type Server struct {
 	gateway *proxy.Gateway
 	alerts  *alert.Engine
 	catalog *discovery.Catalog
+	users   *iam.Store
+	audit   *audit.Store
 }
 
-// NewServer creates a new admin API server.
-func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog) *Server {
+// NewServer creates a new admin API server. users / auditStore may be nil if
+// forensic_dsn is unset — in that case only the legacy bearer/secret login is
+// available and the admin audit trail is not persisted.
+func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog, users *iam.Store, auditStore *audit.Store) *Server {
 	s := &Server{
 		mux:     http.NewServeMux(),
 		store:   st,
@@ -32,13 +38,20 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 		gateway: gw,
 		alerts:  alerts,
 		catalog: catalog,
+		users:   users,
+		audit:   auditStore,
 	}
 	s.registerRoutes()
 	return s
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog}
+	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users, audit: s.audit}
+	// Assign the spec interface only for a real catalog, so a nil *discovery.
+	// Catalog does not become a non-nil interface holding a typed-nil pointer.
+	if s.catalog != nil {
+		h.specCat = s.catalog
+	}
 
 	// Dashboard (unauthenticated — auth handled via JS prompt)
 	s.mux.HandleFunc("GET /", h.serveDashboard)
@@ -53,6 +66,7 @@ func (s *Server) registerRoutes() {
 
 	// Admin endpoints (protected by AdminAuth middleware)
 	s.mux.HandleFunc("GET /api/metrics", h.getMetrics)
+	s.mux.HandleFunc("GET /metrics", h.prometheus) // Prometheus-native exposition
 	s.mux.HandleFunc("GET /api/config", h.getConfig)
 	s.mux.HandleFunc("GET /api/routes", h.getRoutes)
 	s.mux.HandleFunc("GET /api/block-log", h.getBlockLog)
@@ -64,7 +78,17 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/consumers", h.getConsumers)
 	s.mux.HandleFunc("GET /api/posture/summary", h.getPostureSummary)
 	s.mux.HandleFunc("GET /api/effectiveness", h.getEffectiveness)
+	s.mux.HandleFunc("GET /api/findings", h.getFindings)
 	s.mux.HandleFunc("GET /api/report", h.getReport)
+
+	// OpenAPI spec import + documented-vs-observed drift (per-tenant).
+	s.mux.HandleFunc("GET /api/discovery/spec", h.getSpec)
+	s.mux.HandleFunc("PUT /api/discovery/spec", h.putSpec)
+	s.mux.HandleFunc("DELETE /api/discovery/spec", h.deleteSpec)
+	s.mux.HandleFunc("GET /api/discovery/drift", h.getDrift)
+
+	// Admin action audit trail (per-tenant; super-admin can span with ?all=true).
+	s.mux.HandleFunc("GET /api/audit", h.getAudit)
 
 	// IP management
 	s.mux.HandleFunc("GET /api/blocked-ips", h.getBlockedIPs)
@@ -73,6 +97,14 @@ func (s *Server) registerRoutes() {
 
 	// JWT management
 	s.mux.HandleFunc("POST /api/jwt/revoke", h.revokeJWT)
+
+	// Multi-tenancy management (P0-3 / MT phase 5).
+	s.mux.HandleFunc("GET /api/tenants", h.listTenants)
+	s.mux.HandleFunc("POST /api/tenants", h.createTenant)
+	s.mux.HandleFunc("DELETE /api/tenants/{id}", h.deleteTenant)
+	s.mux.HandleFunc("GET /api/users", h.listUsers)
+	s.mux.HandleFunc("POST /api/users", h.createUser)
+	s.mux.HandleFunc("DELETE /api/users/{id}", h.deleteUser)
 }
 
 // ServeHTTP implements http.Handler.

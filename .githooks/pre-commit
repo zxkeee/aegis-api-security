@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Pre-commit guard: reject a commit that would add a compiled binary or an
+# oversized blob, before it ever reaches CI. Mirrors the lint-workflow check.
+#
+# Install once per clone:  make hooks   (sets core.hooksPath to .githooks)
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+exec "$repo_root/scripts/check-no-binaries.sh"

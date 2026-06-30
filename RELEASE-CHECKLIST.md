@@ -14,6 +14,14 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 ## Pillar 1 — No security holes
 
 ### Already addressed
+- [x] Constant-time challenge-token compare in `store.IsValidChallengeToken`
+      (was `stored == token` — replaced with `subtle.ConstantTimeCompare`).
+- [x] Backend identity propagation works in JWKS mode: separate
+      `auth.propagation_secret` (env `AEGIS_PROPAGATION_SECRET`) signs the
+      `X-Gateway-Signature` header even when JWT verification is JWKS-based;
+      startup-warning fires when JWKS is on without a propagation secret so the
+      operator knows the gatewayverify SDK will reject every request.
+- [x] `gosec_results.json` removed from repo + `.gitignore` (build artifact).
 - [x] Stored XSS in the admin console (output escaping across all tables;
       data-attribute event delegation instead of inline JS)
 - [x] CSV/formula injection in the report export (`csvSafe`)
@@ -31,23 +39,45 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       API/CLI. (Full OIDC/SAML SSO + `admin`/`viewer` roles + MFA remain P1.)
 - [x] **Dependency CVE scanning.** `govulncheck` runs in CI; x/net bumped and
       toolchain pinned (go1.26.4) so the module and stdlib are CVE-clean.
-- [ ] **Independent security testing.** Manual pentest plus an automated dynamic
-      scan (OWASP ZAP / nuclei) against a running instance; triage and fix.
-      (External step — cannot be self-certified.)
-- [~] **TLS mandatory in production.** `require_tls` makes startup fail without
-      gateway TLS; a loud startup warning fires when TLS is off; documented that
-      production must terminate TLS at the gateway or a trusted upstream.
-- [ ] **Backend signature verification reference.** Provide a reference
-      implementation/SDK so backends correctly verify `X-Gateway-Signature`,
-      timestamp freshness and nonce uniqueness.
-- [ ] **Secret rotation procedure** documented and tested (admin, JWT, Redis).
+- [~] **Independent security testing.** Automated dynamic scan in place
+      (`.github/workflows/security-scan.yml`): boots a self-contained instance and
+      runs `tests/pentest.sh` (WAF efficacy + admin-auth) plus **nuclei** against
+      the admin plane (high/critical gate, allowlist in `tests/dynamic/`).
+      Validated end-to-end on a Linux Docker host: pentest 18/18, nuclei admin
+      plane 0 high/critical. This scan also surfaced and fixed a real WAF gap
+      (JSON request bodies were not inspected — see `waf.go` JSON body processor).
+      Note: nuclei against the data plane false-positives on the reflecting test
+      backend, so the gate scans the admin plane and pentest.sh covers the WAF.
+      Still open (external, cannot be self-certified): an **independent manual
+      pentest** by a third party.
+- [x] **TLS mandatory in production.** `require_tls` makes startup fail without
+      gateway TLS; the gateway now actually terminates TLS
+      (`ListenAndServeTLS`) when `tls.enabled`, not just plaintext; a loud
+      startup warning fires when TLS is off; documented that production must
+      terminate TLS at the gateway or a trusted upstream.
+- [x] **Backend signature verification reference.** `sdk/gatewayverify` Go
+      package + README verifies `X-Gateway-Signature`, timestamp freshness and
+      nonce uniqueness (HMAC over `sub:roles:scopes:ts:nonce`), with an
+      `http.Handler` wrapper, a pluggable `NonceStore`, and a non-Go recipe.
+- [x] **Secret rotation procedure** documented (`docs/runbooks/secret-rotation.md`)
+      with rolling/dual-accept steps and verification for admin, JWT, Redis and
+      forensic-DSN secrets.
 
 ### P1 — strongly recommended before launch
-- [ ] Real TLS JA3/JA4 fingerprinting (currently header-based, spoofable) or
-      remove the claim from marketing.
-- [ ] Extend `fail_closed` semantics to IP guard and behavioural scoring.
-- [ ] Security headers / CSP review for the console (tighten `script-src`).
-- [ ] Rate limiting on authentication failures beyond the admin plane.
+- [x] Real TLS JA3/JA4 fingerprinting. Spoofable `X-JA3-Fingerprint` header is
+      now stripped; a real fingerprint is computed from the TLS ClientHello at
+      the gateway (`internal/tlsfp`, JA3-style over stdlib-exposed fields, GREASE
+      filtered). Canonical JA3 extension-list parsing remains a future refinement.
+- [~] Extend `fail_closed` semantics to IP guard and behavioural scoring.
+      IP-guard `fail_closed` done (denies on Redis outage); behavioural scoring
+      intentionally stays fail-open (a scoring gap is safer than blocking all
+      traffic) — documented in `store`.
+- [x] Security headers / CSP tightened: nonce-based `script-src`/`style-src`,
+      no more `unsafe-inline`; nonce rotates per response; added `base-uri`,
+      `form-action`, kept `frame-ancestors 'none'`. Validated live on stand.
+- [x] Per-IP brute-force rate limit on `/api/login`: 8 failures / 5 min →
+      `429 Retry-After`. Counter only consumes budget on failure (successful
+      operators never throttle). Validated live: 8× 401 → 9th request 429.
 
 ---
 
@@ -61,17 +91,65 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] Coverage, effectiveness and reporting (JSON/CSV)
 
 ### P1 — table stakes / flagship
-- [ ] **OWASP API Top-10 detection**, starting with **BOLA/BFLA** built on the
+- [x] **OWASP API Top-10 detection**, starting with **BOLA/BFLA** built on the
       existing consumer graph. This is the primary reason customers buy API
-      security; without it the product reads as "another WAF".
-- [ ] **SIEM integration** (Splunk / Elastic) and **alerting** (Slack / PagerDuty)
-      with configurable webhooks.
-- [ ] **Native Prometheus exposition** of the AEGIS counters.
-- [ ] **OpenAPI / spec drift**: import a spec, compare documented vs observed.
+      security; without it the product reads as "another WAF". Implemented in
+      `middleware.AbuseDetection` (wired after JWT so it sees verified roles):
+      **BFLA** flags a consumer hitting a privileged path prefix without any
+      required role; **BOLA/IDOR** flags object-ID enumeration via per-consumer/
+      endpoint distinct-ID counts (`store.TrackObjectAccess`) against both a hard
+      `enum_threshold` ceiling and an adaptive per-consumer EWMA baseline
+      (`store.TrackBaseline`, A2). Detect-only or block mode, with an allowlist
+      for known high-cardinality callers and explainable `why` on every event.
+- [~] **SIEM integration** (Splunk / Elastic) and **alerting** (Slack / PagerDuty)
+      with configurable webhooks. Done: `alerting` config block (webhook URL,
+      `generic`/`slack` payload format, `min_severity` gate); `AEGIS_ALERT_WEBHOOK_URL`
+      env override. Remaining: per-rule routing, ticketing (Jira/ServiceNow).
+- [x] **Native Prometheus exposition** of the AEGIS counters (`GET /metrics`,
+      text format 0.0.4, behind the admin bearer; scrape config in `prometheus.yml`).
+- [x] **OpenAPI / spec drift**: import an OpenAPI 3.x / Swagger 2.0 spec (config
+      `discovery.spec_path` fallback or per-tenant `PUT /api/discovery/spec`) and
+      compare documented vs observed. `GET /api/discovery/drift` reports
+      **undocumented** endpoints (observed, not in spec — OWASP API9) and
+      **zombie** operations (documented, never observed); undocumented endpoints
+      also surface as `undocumented_endpoint`/`undocumented_method` findings on
+      the catalog. Spec paths are canonicalised to the catalog's `{id}` template
+      so documented and observed surfaces compare exactly. Parser is dependency
+      -free (yaml.v3, which also reads JSON). Per-tenant spec stored in PG with
+      RLS; validated on the home-server containers.
+- [~] **Schema enforcement (positive security)**: beyond reporting drift, actively
+      validate requests against the documented contract (`security.schema`,
+      `middleware.SchemaValidation`). The parser captures each operation's request
+      schema (params + JSON body, `$ref`-resolved); the validator flags missing/
+      mistyped/out-of-enum query params and JSON body fields, and — the
+      anti mass-assignment lever — rejects undocumented body fields when the schema
+      sets `additionalProperties:false` (OWASP API6). Monitor mode records, block
+      mode returns a machine-readable 422. Contract source in v1 is the config-level
+      spec (`discovery.spec_path`); remaining: enforce per-tenant uploaded specs,
+      path/header params, formats/bounds.
 
 ### P2
-- [ ] Multi-tenancy (organisations, per-tenant data isolation).
-- [ ] Anomaly detection / behavioural baselines per consumer.
+- [~] **Admin audit log** (enterprise/compliance table-stake). Done: `internal/audit`
+      persists every control-plane action (login/login_failed/logout/mutation/
+      `denied:<reason>`) to PostgreSQL via an async best-effort writer that never
+      blocks the admin request path; entries carry actor/role/super-admin/tenant/
+      method/path/status/ip. `AdminAuth` records; `GET /api/audit` reads,
+      tenant-scoped (super-admin spans all with `?all=true`). Remaining:
+      retention/rollup, data-residency, export, and an RLS policy on
+      `admin_audit_log` (today it is application-scoped only).
+- [x] **Multi-tenancy** (organisations, per-tenant data isolation). Closed
+      end-to-end across all 6 phases of ADR-001 (`docs/design/multitenancy.md`):
+      `TenantResolve` ingress (route+host, strips `X-Tenant-*`); PostgreSQL
+      isolation (`tenant_id` + composite PKs on all catalog/forensic tables,
+      `WHERE tenant_id` everywhere, RLS `FORCE`+policy via `set_config` GUC as a
+      fail-closed backstop); Redis isolation (`tkey(ctx)` → `gw:t:<tenant>:*` on
+      every key family); console sessions pinned to a tenant + RBAC (admin/viewer)
+      in `internal/iam`; tenant + user CRUD (`/api/tenants`, `/api/users`) with
+      super-admin scoping; cross-tenant deny tests against live PG/Redis, plus a
+      multi-tenant k6 load run (overhead in the noise) and `docs/runbooks/ha.md`.
+- [~] Anomaly detection / behavioural baselines per consumer. Done: per-consumer
+      EWMA baseline for BOLA enumeration (`store.TrackBaseline`, A2). Remaining:
+      volume/time/geo/error-rate profiles, sequence anomaly, peer-group.
 - [ ] Out-of-band deployment (traffic mirroring) in addition to inline.
 - [ ] Compliance report templates (PCI-DSS, HIPAA, GDPR).
 - [ ] Licensing / metering.
@@ -81,20 +159,52 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 ## Pillar 3 — Works excellently
 
 ### P0 — release blockers
-- [ ] **Test coverage.** Unit tests for all middleware, config validation, proxy
-      and store; integration tests against Redis and PostgreSQL; regression tests
-      for every fixed vulnerability. Target >= 70% on critical packages, enforced
-      in CI.
-- [ ] **Load and latency benchmarks.** Published latency overhead and max RPS per
-      core (k6 / vegeta), with the WAF on and off.
-- [ ] **Graceful failure under load.** Verify behaviour when Redis or PostgreSQL
-      is unavailable, and during rolling updates, under sustained traffic.
+- [~] **Test coverage.** Regression tests added for every recent security fix
+      (JA3 spoof, IP-guard/rate-limit fail-closed, identity signature/replay).
+      A CI coverage gate (`scripts/coverage-gate.sh`, wired into `test.yml`)
+      enforces per-package floors that ratchet toward the >= 70% target.
+      Current: tenant 100%, tlsfp 100%, gatewayverify 93.4%, proxy 89%,
+      config 85.4%, alert 75.6%, middleware ~65%; with real Redis/PG
+      discovery is ~86% and store ~28% (the cross-tenant deny tests pass against
+      live databases — validated on the home-server containers, not just CI).
+      api 18.4% (pure helpers; handler integration tests still to add).
+      proxy/discovery/api were 26/23/11% before this pass.
+- [~] **Load and latency benchmarks.** k6 scripts + guide under `tests/load/`
+      (single-tenant + multi-tenant + attack-mix scenarios, CI-able
+      thresholds). First on-hardware run in `tests/load/results-2026-06-21.md`:
+      single-tenant 373.6 RPS / p50 33.5 ms, multi-tenant 375.7 RPS / p50
+      34 ms (MT overhead in the noise), attack-mix p50 7.9 ms (WAF rejects
+      early). Still to do: wired-LAN run, VU sweep, WAF on/off split for
+      published capacity numbers.
+- [~] **Graceful failure under load.** Redis-outage behaviour verified two ways:
+      (1) end-to-end unit matrix in `internal/middleware/degradation_test.go`
+      (fail_closed → 503, default → 200, static blacklist still enforced, no
+      panics) against a killed Redis; (2) **on-hardware sustained-traffic run**
+      with Redis killed mid-test (`tests/load/redis-outage-results-2026-06-26.md`):
+      at 50 rps, during a full Redis outage the gateway kept **100% success**
+      (fail-open) with **p99 864 ms / max 1.30 s** — bounded by the fail-fast
+      Redis timeouts (dial 1s / read-write 500ms / 1 retry), vs the 3–9 s hangs
+      the go-redis defaults would cause; latency snapped back to p99 42 ms on
+      recovery. PostgreSQL-unavailable is partially covered (catalog → 503,
+      `catalog_nil_test.go`; forensic falls back to the Redis ring buffer).
+      Still to do: capacity sweep for published max-RPS, PG-outage-under-load,
+      and a rolling-update drain (zero-5xx during `Shutdown`).
 
 ### P1
-- [ ] High-availability guide (Redis Sentinel/Cluster, replicated PostgreSQL).
-- [ ] Capacity-planning guidance with concrete numbers.
-- [ ] End-to-end smoke test in CI (start gateway + Redis + PG, drive traffic,
-      assert catalog and posture populate).
+- [x] High-availability guide (`docs/runbooks/ha.md`): topology (Sentinel + PG
+      streaming replication), per-failure-mode matrix (fail-open vs
+      fail-closed per control), RLS rolling-deploy notes, bring-up checklist.
+      Sentinel client implemented: `redis.UniversalOptions{MasterName, Addrs}`
+      via `store.NewWithConfig` + `config.RedisConfig.Sentinel`; AEGIS code
+      is mode-agnostic (the client handles failover).
+- [~] Capacity-planning guidance with **rule-of-thumb** sizing (in `ha.md`);
+      concrete numbers pending the benchmark run on reference hardware.
+- [x] End-to-end smoke test in CI (start gateway + Redis + PG, drive traffic,
+      assert catalog and posture populate). `.github/workflows/e2e-smoke.yml`
+      boots the gateway against real Redis + PostgreSQL + an echo upstream, drives
+      traffic, and asserts the discovery catalog (`/api/catalog`) and posture
+      summary (`/api/posture/summary`) populate with normalised `{id}` templates.
+      Validated end-to-end on a Linux Docker host.
 
 ---
 

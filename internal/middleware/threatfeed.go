@@ -20,7 +20,7 @@ const (
 )
 
 // ThreatFeed blocks IPs from known threat intelligence feeds.
-func ThreatFeed(cfg config.ThreatFeedConfig, log Logger, st Store) Middleware {
+func ThreatFeed(cfg config.ThreatFeedConfig, log Logger, st DenySink) Middleware {
 	if !cfg.Enabled || cfg.URL == "" {
 		return passthrough
 	}

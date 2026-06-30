@@ -36,7 +36,10 @@ go.work.sum
 
 # Build output
 /bin/
+# Stray loadgen binary from `go build ./tests/load`
+/load
 
 # Redis dump (local dev)
 *.rdb
 dump.rdb
+gosec_results.json

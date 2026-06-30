@@ -24,7 +24,7 @@ import (
 type JWTAuth struct {
 	cfg    config.AuthConfig
 	log    Logger
-	st     Store
+	st     RevocationChecker
 	jwks   keyfunc.Keyfunc
 	jwksMu sync.RWMutex
 }
@@ -32,7 +32,7 @@ type JWTAuth struct {
 // NewJWTAuth creates a new JWT authentication middleware instance.
 // If JWKS URL is configured, it fetches public keys for RSA/ECDSA validation.
 // Otherwise, falls back to HMAC shared-secret validation.
-func NewJWTAuth(cfg config.AuthConfig, log Logger, st Store) *JWTAuth {
+func NewJWTAuth(cfg config.AuthConfig, log Logger, st RevocationChecker) *JWTAuth {
 	ja := &JWTAuth{cfg: cfg, log: log, st: st}
 
 	if cfg.JWKSURL != "" {
@@ -121,9 +121,10 @@ func (ja *JWTAuth) Middleware() Middleware {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check if path is excluded
+			// Check if path is excluded (segment-boundary match, so "/public"
+			// excludes "/public" and "/public/x" but not "/publicXYZ").
 			for _, ex := range ja.cfg.Exclude {
-				if strings.HasPrefix(r.URL.Path, ex) {
+				if config.PathHasPrefix(r.URL.Path, ex) {
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -137,8 +138,11 @@ func (ja *JWTAuth) Middleware() Middleware {
 
 			tokenStr := strings.TrimPrefix(auth, "Bearer ")
 
-			// Parse and validate using the appropriate key function
-			token, err := jwt.Parse(tokenStr, ja.keyFunc)
+			// Parse and validate using the appropriate key function.
+			// WithExpirationRequired rejects tokens that carry no "exp" claim:
+			// golang-jwt does not require one by default, which would let a signed
+			// token live forever. A security gateway must enforce expiry.
+			token, err := jwt.Parse(tokenStr, ja.keyFunc, jwt.WithExpirationRequired())
 			if err != nil || !token.Valid {
 				errMsg := "unknown"
 				if err != nil {
@@ -181,7 +185,18 @@ func (ja *JWTAuth) Middleware() Middleware {
 			if jti, ok := claims["jti"].(string); ok && jti != "" {
 				revoked, err := ja.st.IsJTIRevoked(r.Context(), jti)
 				if err != nil {
-					ja.log.Error("jwt_revocation_check_failed", map[string]any{"error": err.Error()})
+					ja.log.Error("jwt_revocation_check_failed", map[string]any{
+						"error":       err.Error(),
+						"fail_closed": ja.cfg.RevocationFailClosed,
+					})
+					// On a backing-store outage the revocation status is unknown. By
+					// default we fail open (proceed) to preserve availability; in
+					// high-assurance mode we deny so a revoked token can never slip
+					// through during an outage.
+					if ja.cfg.RevocationFailClosed {
+						http.Error(w, "Token Revocation Check Unavailable", http.StatusServiceUnavailable)
+						return
+					}
 				}
 				if revoked {
 					ja.log.Warn("jwt_revoked_token_used", map[string]any{
@@ -224,7 +239,17 @@ func (ja *JWTAuth) Middleware() Middleware {
 				r.Header.Set("X-Gateway-Scopes", scopeStr)
 			}
 
-			if sub != "" && ja.cfg.Secret != "" {
+			// Identity-propagation signing key. Prefer the dedicated
+			// propagation_secret (works for both JWKS and HMAC token verification
+			// modes); fall back to the HMAC token secret for backward
+			// compatibility with single-secret installs. Without either, the
+			// signature is skipped and backends will reject the request via the
+			// gatewayverify SDK — which is the right fail-closed behaviour.
+			propSecret := ja.cfg.PropagationSecret
+			if propSecret == "" {
+				propSecret = ja.cfg.Secret
+			}
+			if sub != "" && propSecret != "" {
 				ts := fmt.Sprintf("%d", time.Now().Unix())
 				nonceBytes := make([]byte, 16)
 				rand.Read(nonceBytes) //nolint:errcheck
@@ -232,7 +257,7 @@ func (ja *JWTAuth) Middleware() Middleware {
 
 				// Canonical payload — upstream must reconstruct it identically.
 				payload := strings.Join([]string{sub, roleStr, scopeStr, ts, nonce}, ":")
-				mac := hmac.New(sha256.New, []byte(ja.cfg.Secret))
+				mac := hmac.New(sha256.New, []byte(propSecret))
 				mac.Write([]byte(payload))
 
 				r.Header.Set("X-Gateway-Timestamp", ts)
