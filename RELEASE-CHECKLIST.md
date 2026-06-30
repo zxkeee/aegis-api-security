@@ -117,6 +117,16 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       so documented and observed surfaces compare exactly. Parser is dependency
       -free (yaml.v3, which also reads JSON). Per-tenant spec stored in PG with
       RLS; validated on the home-server containers.
+- [~] **Schema enforcement (positive security)**: beyond reporting drift, actively
+      validate requests against the documented contract (`security.schema`,
+      `middleware.SchemaValidation`). The parser captures each operation's request
+      schema (params + JSON body, `$ref`-resolved); the validator flags missing/
+      mistyped/out-of-enum query params and JSON body fields, and — the
+      anti mass-assignment lever — rejects undocumented body fields when the schema
+      sets `additionalProperties:false` (OWASP API6). Monitor mode records, block
+      mode returns a machine-readable 422. Contract source in v1 is the config-level
+      spec (`discovery.spec_path`); remaining: enforce per-tenant uploaded specs,
+      path/header params, formats/bounds.
 
 ### P2
 - [~] **Admin audit log** (enterprise/compliance table-stake). Done: `internal/audit`

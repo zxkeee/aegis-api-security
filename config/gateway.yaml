@@ -175,6 +175,15 @@ security:
       # - path: "/admin/"
       #   required_roles: ["admin"]
 
+  # Positive-security schema enforcement: validate each request against the
+  # documented OpenAPI/Swagger contract (discovery.spec_path) and reject what the
+  # contract does not permit (missing/mistyped params, undocumented body fields).
+  # Start in monitor mode to collect false positives, then flip block_mode.
+  schema:
+    enabled: false
+    block_mode: false      # true = reject non-conforming requests with 422
+    # max_body_bytes: 1048576  # body cap for validation (default 1 MiB)
+
 registry:
   enabled: false
   dsn: ""

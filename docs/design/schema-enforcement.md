@@ -1,7 +1,13 @@
 # Design: Schema Enforcement (positive security)
 
-> Статус: в работе. Реализуется по стадиям; этот документ — источник правды по
+> Статус: **v1 реализован (стадии 1–3)**. Парсер схем (`discovery/schema.go`),
+> валидатор (`discovery/schema_validate.go`), middleware
+> (`middleware/schema.go`), wiring в `internal/gateway`. Источник правды по
 > объёму и решениям. Связано с ROADMAP B2 и «Protect» в `docs/PRODUCT.md`.
+>
+> Источник контракта в v1 — **config-level спека** (`discovery.spec_path`),
+> парсится при сборке цепочки (обновляется на hot-reload). Per-tenant
+> uploaded-спека (та, что у drift в PG) пока **не** enforce-ится — следующий шаг.
 
 ## Зачем
 

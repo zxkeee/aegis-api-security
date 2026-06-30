@@ -129,7 +129,7 @@ auth/без, с PII/без). Это готовый фундамент для:
 | Ставка | Что построить | Усилие |
 |---|---|---|
 | B1. **Out-of-band сенсор (mirror/eBPF)** | Обнаружение без inline-развёртывания: приём зеркалированного трафика или eBPF-сенсор. Снимает барьер «боюсь ставить в прод». Часто решает сделку. | 4–8 нед |
-| B2. **OpenAPI import + drift** | Импорт спеки, сравнение «задокументировано vs реально», schema-валидация, авто-генерация спеки из трафика. | 2–3 нед |
+| B2. **OpenAPI import + drift + enforcement** 🟡 v1 | Сделано: импорт спеки (OpenAPI 3 / Swagger 2), drift «задокументировано vs реально» (`GET /api/discovery/drift`), и **positive-security enforcement** (`security.schema`, `middleware.SchemaValidation`): запрос валидируется против документированной операции — query-параметры (required/type/enum) и JSON-тело (type/required/enum + `additionalProperties:false` ⇒ reject недокументированных полей, anti mass-assignment, API6). Monitor/block (422). Контракт v1 — config-level спека. Дальше: enforce per-tenant uploaded-спеки, path/header-параметры, форматы/bounds, авто-генерация спеки из трафика. | 2–3 нед |
 | B3. **Мульти-источники** | Логи cloud-LB (ALB/Cloud Armor), service mesh, gateway-логи — не только наш прокси. | 3–4 нед |
 | B4. **Zombie/deprecated/versioning** | Трекинг устаревших и неиспользуемых API, версий. | 1–2 нед |
 
