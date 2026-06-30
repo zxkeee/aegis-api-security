@@ -26,6 +26,10 @@ type Spec struct {
 	// methods, so an undocumented *method* on a documented *path* can be told
 	// apart from a wholly undocumented path.
 	methodsByPath map[string]map[string]bool
+	// opSchemas holds the per-operation request contract (params + JSON body)
+	// for schema enforcement, keyed "METHOD template" (see schema.go). Populated
+	// in the same parse pass; nil-safe via LookupOp.
+	opSchemas map[string]*OpSchema
 }
 
 // httpMethods are the OpenAPI operation keys treated as HTTP methods on a path
@@ -43,6 +47,12 @@ type specDoc struct {
 	Swagger  string                          `yaml:"swagger"`
 	BasePath string                          `yaml:"basePath"` // Swagger 2.0 only
 	Paths    map[string]map[string]yaml.Node `yaml:"paths"`
+	// Components / Definitions back $ref resolution for schema enforcement
+	// (OpenAPI 3 and Swagger 2 respectively); raw nodes decoded lazily.
+	Components struct {
+		Schemas map[string]yaml.Node `yaml:"schemas"`
+	} `yaml:"components"`
+	Definitions map[string]yaml.Node `yaml:"definitions"`
 }
 
 // ParseSpec parses an OpenAPI 3.x or Swagger 2.0 document into a Spec. It accepts
@@ -102,6 +112,9 @@ func ParseSpec(raw []byte) (*Spec, error) {
 	if len(s.ops) == 0 {
 		return nil, errors.New("spec: document declares paths but no HTTP operations")
 	}
+	// Second pass: per-operation request schemas for enforcement (best-effort;
+	// an operation with no/undecodable schema simply isn't enforced).
+	s.opSchemas = doc.parseOpSchemas(base)
 	return s, nil
 }
 
