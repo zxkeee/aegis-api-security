@@ -56,8 +56,13 @@ jobs:
 
       # Coverage gate: fail if a critical package regresses below its floor.
       # Floors ratchet toward the >=70% release target (see the script).
+      # Needs the same DB env as the test step so the integration tests (iam,
+      # audit, discovery, api) run — otherwise they skip and the gate undercounts.
       - name: Coverage gate
         run: ./scripts/coverage-gate.sh
+        env:
+          REDIS_ADDR: localhost:6379
+          POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/aegis?sslmode=disable
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4

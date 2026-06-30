@@ -91,6 +91,24 @@ func TestServer_StoreBackedHandlers(t *testing.T) {
 	}
 }
 
+// TestServer_DiscoveryHandlersNoCatalog exercises the nil-catalog branch of the
+// discovery handlers (the test server has no PostgreSQL catalog). Auth itself is
+// the AdminAuth middleware's job (covered in the middleware package); here we
+// only assert each handler runs without panicking and returns a sane status.
+func TestServer_DiscoveryHandlersNoCatalog(t *testing.T) {
+	s := newTestServer(t)
+	for _, path := range []string{
+		"/api/catalog", "/api/consumers", "/api/posture/summary",
+		"/api/effectiveness", "/api/findings", "/api/report",
+	} {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, asAdmin(httptest.NewRequest(http.MethodGet, path, nil)))
+		if rec.Code != http.StatusServiceUnavailable && rec.Code != http.StatusOK {
+			t.Errorf("GET %s with no catalog = %d, want 503 or 200", path, rec.Code)
+		}
+	}
+}
+
 func TestServer_BlockIPRoundTrip(t *testing.T) {
 	s := newTestServer(t)
 	// POST a block, then confirm it surfaces in the blocked-ips list.

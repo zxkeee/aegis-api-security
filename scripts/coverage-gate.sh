@@ -19,11 +19,14 @@ api-gateway/internal/config 86
 api-gateway/internal/alert 75
 api-gateway/internal/tlsfp 95
 api-gateway/internal/tenant 100
-api-gateway/internal/iam 7
+api-gateway/internal/iam 75
 api-gateway/internal/proxy 89
-api-gateway/internal/discovery 40
+api-gateway/internal/discovery 80
 api-gateway/internal/classify 90
-api-gateway/internal/api 42
+api-gateway/internal/api 60
+api-gateway/internal/store 80
+api-gateway/internal/audit 75
+api-gateway/internal/gateway 82
 api-gateway/sdk/gatewayverify 90
 "
 
