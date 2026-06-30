@@ -24,7 +24,7 @@
 
 ## 2. Находки
 
-### F1 — «Жирный» интерфейс `middleware.Store` (ISP) · приоритет: ВЫСОКИЙ
+### F1 — «Жирный» интерфейс `middleware.Store` (ISP) · ✅ СДЕЛАНО (ca638a9)
 
 `internal/middleware/ports.go` определяет один интерфейс `Store` на ~25 методов
 (rate-limit, IP-block, behaviour, challenge, JTI, BOLA, session, forensic…).
@@ -39,7 +39,7 @@
   удовлетворять всем; каждый middleware принимает только нужный. Риск: низкий
   (чисто декларативно, поведение не меняется).
 
-### F2 — Интерфейс `Store` протекает конкретными типами · приоритет: СРЕДНИЙ
+### F2 — Интерфейс `Store` протекает конкретными типами · ✅ СДЕЛАНО
 
 `ports.go` ссылается на `iam.Session` и `store.ForensicEntry` прямо в сигнатурах:
 ```go
@@ -52,9 +52,12 @@ GetForensicLog(ctx, limit) ([]store.ForensicEntry, error)
 
 - **Чем плохо:** ports.go перестаёт быть границей; middleware жёстко знает форму
   доменных структур чужих пакетов.
-- **Фикс:** при разбиении F1 вынести `Session`/`ForensicEntry` в нейтральное
-  место или объявить узкие интерфейсы-проекции. Прагматично: это терпимо, т.к.
-  `iam` — лист; чинить заодно с F1, не отдельно. Риск: низкий.
+- **Сделано:** `ForensicEntry` вынесен в dependency-free leaf `internal/secevent`
+  (тип `secevent.Entry`); в `store` оставлен алиас `type ForensicEntry =
+  secevent.Entry`, поэтому store/forensic/api не тронуты. Middleware переключён на
+  `secevent.Entry` → **ребро `middleware → store` из графа удалено полностью**
+  (middleware теперь зависит только от листьев + discovery/config). `iam.Session`
+  оставлен как есть: `iam` — лист, реальной связанности не добавляет.
 
 ### F3 — `store → iam` (персистентность знает домен идентичности) · приоритет: НИЗКИЙ
 

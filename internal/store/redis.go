@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"api-gateway/internal/iam"
+	"api-gateway/internal/secevent"
 	"api-gateway/internal/tenant"
 
 	"github.com/redis/go-redis/v9"
@@ -23,17 +24,11 @@ func tkey(ctx context.Context, suffix string) string {
 	return "gw:t:" + tenant.From(ctx) + ":" + suffix
 }
 
-// ForensicEntry represents a security event for audit trails.
-type ForensicEntry struct {
-	Tenant    string         `json:"tenant,omitempty"`
-	Timestamp time.Time      `json:"ts"`
-	IP        string         `json:"ip"`
-	Path      string         `json:"path"`
-	Method    string         `json:"method"`
-	Reason    string         `json:"reason"`
-	Code      int            `json:"code"`
-	Extra     map[string]any `json:"extra,omitempty"`
-}
+// ForensicEntry represents a security event for audit trails. It is an alias of
+// secevent.Entry: the canonical type lives in the dependency-free secevent leaf
+// so the middleware layer can emit events without importing this package (audit
+// finding F2). Existing store/forensic/api references keep working unchanged.
+type ForensicEntry = secevent.Entry
 
 // ForensicSink is an interface for persistent forensic log backends (PostgreSQL, etc).
 type ForensicSink interface {

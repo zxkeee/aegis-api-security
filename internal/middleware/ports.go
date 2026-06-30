@@ -6,7 +6,7 @@ import (
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/iam"
-	"api-gateway/internal/store"
+	"api-gateway/internal/secevent"
 )
 
 // Logger defines the interface for logging within the middleware layer.
@@ -47,7 +47,7 @@ type MetricsSink interface {
 
 // ForensicSink appends a security event to the forensic trail.
 type ForensicSink interface {
-	PushForensic(ctx context.Context, e store.ForensicEntry)
+	PushForensic(ctx context.Context, e secevent.Entry)
 }
 
 // AutoBanCounter tracks repeated offences per IP.

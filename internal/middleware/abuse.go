@@ -8,7 +8,7 @@ import (
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
-	"api-gateway/internal/store"
+	"api-gateway/internal/secevent"
 )
 
 // AbuseDetection detects authorization abuse that signature WAFs miss:
@@ -181,7 +181,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 func recordAbuse(r *http.Request, log Logger, st DenySink, reason, ip string, extra map[string]any) {
 	log.BlockEvent(reason, ip, r.URL.Path, r.Method, extra)
 	st.IncrMetric(r.Context(), "abuse_"+reason)
-	st.PushForensic(r.Context(), store.ForensicEntry{
+	st.PushForensic(r.Context(), secevent.Entry{
 		Timestamp: time.Now().UTC(),
 		IP:        ip,
 		Path:      r.URL.Path,

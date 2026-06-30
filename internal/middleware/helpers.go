@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"api-gateway/internal/store"
+	"api-gateway/internal/secevent"
 	"api-gateway/internal/tenant"
 )
 
@@ -129,7 +129,7 @@ func SecurityDeny(w http.ResponseWriter, r *http.Request,
 
 	log.BlockEvent(reason, ip, r.URL.Path, r.Method, extra)
 	st.IncrMetric(r.Context(), "blocked_"+reason)
-	st.PushForensic(r.Context(), store.ForensicEntry{
+	st.PushForensic(r.Context(), secevent.Entry{
 		Tenant:    tenant.From(r.Context()),
 		Timestamp: time.Now().UTC(),
 		IP:        ip,

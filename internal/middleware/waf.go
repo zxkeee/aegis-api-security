@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"api-gateway/internal/config"
-	"api-gateway/internal/store"
+	"api-gateway/internal/secevent"
 
 	"github.com/corazawaf/coraza/v3"
 	txhttp "github.com/corazawaf/coraza/v3/http"
@@ -134,7 +134,7 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 				log.BlockEvent("waf_rule_triggered", ip, r.URL.Path, r.Method, map[string]any{
 					"status": sw.status,
 				})
-				st.PushForensic(r.Context(), store.ForensicEntry{
+				st.PushForensic(r.Context(), secevent.Entry{
 					Timestamp: time.Now().UTC(),
 					IP:        ip,
 					Path:      r.URL.Path,
