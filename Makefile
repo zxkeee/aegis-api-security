@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen check-binaries
+.PHONY: build run test clean docker loadgen check-binaries hooks
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -11,6 +11,11 @@ loadgen:
 # Fail if a compiled binary or oversized blob got committed. Also runs in CI.
 check-binaries:
 	./scripts/check-no-binaries.sh
+
+# Install the versioned git hooks (.githooks/) for this clone.
+hooks:
+	git config core.hooksPath .githooks
+	@echo "git hooks installed: core.hooksPath -> .githooks"
 
 run: build
 	./bin/gateway --config config/gateway.yaml

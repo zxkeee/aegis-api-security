@@ -127,8 +127,19 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       tenant-scoped (super-admin spans all with `?all=true`). Remaining:
       retention/rollup, data-residency, export, and an RLS policy on
       `admin_audit_log` (today it is application-scoped only).
-- [ ] Multi-tenancy (organisations, per-tenant data isolation).
-- [ ] Anomaly detection / behavioural baselines per consumer.
+- [x] **Multi-tenancy** (organisations, per-tenant data isolation). Closed
+      end-to-end across all 6 phases of ADR-001 (`docs/design/multitenancy.md`):
+      `TenantResolve` ingress (route+host, strips `X-Tenant-*`); PostgreSQL
+      isolation (`tenant_id` + composite PKs on all catalog/forensic tables,
+      `WHERE tenant_id` everywhere, RLS `FORCE`+policy via `set_config` GUC as a
+      fail-closed backstop); Redis isolation (`tkey(ctx)` → `gw:t:<tenant>:*` on
+      every key family); console sessions pinned to a tenant + RBAC (admin/viewer)
+      in `internal/iam`; tenant + user CRUD (`/api/tenants`, `/api/users`) with
+      super-admin scoping; cross-tenant deny tests against live PG/Redis, plus a
+      multi-tenant k6 load run (overhead in the noise) and `docs/runbooks/ha.md`.
+- [~] Anomaly detection / behavioural baselines per consumer. Done: per-consumer
+      EWMA baseline for BOLA enumeration (`store.TrackBaseline`, A2). Remaining:
+      volume/time/geo/error-rate profiles, sequence anomaly, peer-group.
 - [ ] Out-of-band deployment (traffic mirroring) in addition to inline.
 - [ ] Compliance report templates (PCI-DSS, HIPAA, GDPR).
 - [ ] Licensing / metering.
