@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"net/http"
+	"os"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
@@ -34,7 +35,7 @@ type step struct {
 //   - AbuseDetection runs AFTER auth so it sees verified JWT roles.
 //
 // Read this before reordering anything.
-func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, cat middleware.Catalog, postureEng *discovery.PostureEngine) []step {
+func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, cat middleware.Catalog, postureEng *discovery.PostureEngine, schemaSpec *discovery.Spec) []step {
 	// effective resolves the merged controls (global security.* + per-route
 	// overrides) for a request path. The route-overridable controls below are
 	// built force-enabled and gated on these booleans, so a route can switch a
@@ -95,7 +96,8 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 		{"WAF", wafMW},
 		{"Discovery", middleware.Discovery(cfg.Security.Inventory, cat, log)}, // passive API discovery
 		{"Auth", authMW},
-		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, log, st)}, // BOLA/BFLA (needs verified roles)
+		{"SchemaValidation", middleware.SchemaValidation(cfg.Security.Schema, schemaSpec, log, st)}, // positive security: validate against OpenAPI contract
+		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, log, st)},                  // BOLA/BFLA (needs verified roles)
 		{"DLP", dlpMW},
 		{"BehaviorAnalysis", middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st)},
 	}
@@ -123,12 +125,42 @@ func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middlewa
 		cat = catalog
 	}
 
-	steps := chainSteps(cfg, log, st, cat, postureEng)
+	steps := chainSteps(cfg, log, st, cat, postureEng, enforcementSpec(cfg, log))
 	mws := make([]middleware.Middleware, len(steps))
 	for i, s := range steps {
 		mws[i] = s.mw
 	}
 	return middleware.Chain(gw, mws...), gw, nil
+}
+
+// enforcementSpec parses the config-level OpenAPI/Swagger document
+// (discovery.spec_path) used by schema enforcement. It returns nil — disabling
+// enforcement, fail-open — when enforcement is off, no path is set, or the
+// document cannot be read/parsed (logged, never fatal). Re-read on every chain
+// build so a hot-reload picks up an edited spec.
+func enforcementSpec(cfg config.GatewayConfig, log *logger.Logger) *discovery.Spec {
+	if !cfg.Security.Schema.Enabled {
+		return nil
+	}
+	path := cfg.Discovery.SpecPath
+	if path == "" {
+		log.Warn("schema enforcement enabled but discovery.spec_path is empty — nothing to enforce", nil)
+		return nil
+	}
+	raw, err := os.ReadFile(path) // #nosec G304 -- operator-supplied config path, not user input
+	if err != nil {
+		log.Error("schema enforcement: spec read failed (enforcement disabled)", map[string]any{"error": err.Error(), "path": path})
+		return nil
+	}
+	spec, err := discovery.ParseSpec(raw)
+	if err != nil {
+		log.Error("schema enforcement: spec parse failed (enforcement disabled)", map[string]any{"error": err.Error(), "path": path})
+		return nil
+	}
+	log.Info("schema enforcement enabled", map[string]any{
+		"path": path, "operations": spec.OpCount(), "block_mode": cfg.Security.Schema.BlockMode,
+	})
+	return spec
 }
 
 // passthroughMW is a no-op middleware used when a control is fully inactive

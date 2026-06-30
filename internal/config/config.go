@@ -133,6 +133,22 @@ type SecurityConfig struct {
 	Inventory  APIInventoryConfig `yaml:"api_inventory"`
 	ThreatFeed ThreatFeedConfig   `yaml:"threat_feed"`
 	Abuse      AbuseConfig        `yaml:"abuse"`
+	Schema     SchemaConfig       `yaml:"schema"`
+}
+
+// SchemaConfig controls positive-security schema enforcement: requests are
+// validated against the documented OpenAPI/Swagger contract and non-conforming
+// ones are flagged (monitor) or rejected (block). The contract is the
+// config-level spec (discovery.spec_path). See docs/design/schema-enforcement.md.
+type SchemaConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// BlockMode rejects a non-conforming request with 422; when false (default)
+	// the gateway only records the violations (safe rollout / FP collection).
+	BlockMode bool `yaml:"block_mode"`
+	// MaxBodyBytes caps how much request body is buffered for validation. A larger
+	// body streams through unvalidated rather than being held in memory (bounded
+	// inspection gap over OOM risk). Default 1 MiB.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
 }
 
 type RateLimitConfig struct {

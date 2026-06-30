@@ -35,6 +35,7 @@ func TestChainOrder(t *testing.T) {
 		"WAF",
 		"Discovery",
 		"Auth",
+		"SchemaValidation",
 		"AbuseDetection",
 		"DLP",
 		"BehaviorAnalysis",
@@ -47,7 +48,7 @@ func TestChainOrder(t *testing.T) {
 	// With every control disabled the constructors return passthrough without
 	// ever touching the store, so a nil Store is sufficient to assemble — and
 	// pin the order of — the chain without a live Redis.
-	steps := chainSteps(cfg, log, nil, nil, postureEng)
+	steps := chainSteps(cfg, log, nil, nil, postureEng, nil)
 
 	if len(steps) != len(want) {
 		t.Fatalf("chain length = %d, want %d", len(steps), len(want))
