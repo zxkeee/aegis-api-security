@@ -21,6 +21,7 @@ import (
 	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
+	"api-gateway/internal/sso"
 	"api-gateway/internal/store"
 	"api-gateway/internal/tlsfp"
 
@@ -152,6 +153,22 @@ func main() {
 		}
 	}
 
+	// ── OIDC single sign-on (admin console) ───────────────────────────────────
+	// Discovery is a network call; bound it and fail startup loudly if SSO is
+	// configured but the provider is unreachable — a half-configured SSO is worse
+	// than an obvious boot failure. Requires the iam store (validated in config).
+	var ssoAuth *sso.Authenticator
+	if cfg.OIDC.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ssoAuth, err = sso.New(ctx, cfg.OIDC)
+		cancel()
+		if err != nil {
+			log.Error("failed to initialise OIDC SSO", map[string]any{"error": err.Error(), "issuer": cfg.OIDC.Issuer})
+			os.Exit(1)
+		}
+		log.Info("OIDC SSO enabled", map[string]any{"issuer": cfg.OIDC.Issuer})
+	}
+
 	// ── Build Handler Chain ───────────────────────────────────────────────────
 	var activeHandler atomic.Value
 	handler, gw, err := gateway.BuildHandlerChain(cfg, log, st, catalog, postureEng)
@@ -189,7 +206,13 @@ func main() {
 	if auditStore != nil {
 		auditRec = auditStore
 	}
-	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore)
+	// Pass a nil interface (not a typed-nil *sso.Authenticator) when SSO is off,
+	// so the handlers' oidc != nil check works correctly.
+	var ssoIface api.OIDCAuthenticator
+	if ssoAuth != nil {
+		ssoIface = ssoAuth
+	}
+	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore, ssoIface)
 
 	// FIX SEC: Protect admin API against brute force and DDoS
 	adminRateLimit := config.RateLimitConfig{

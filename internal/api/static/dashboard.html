@@ -153,6 +153,14 @@ input { font-family:var(--mono); }
 .lbtn:hover { background:#e6e6e9; }
 .lbtn:hover::before { transform: translateX(100%); }
 .lbtn:active { transform: translateY(1px); }
+/* SSO button: secondary styling (outline) so the primary secret login stays
+   visually dominant. Rendered as an <a>, so re-assert button layout. */
+.sso-btn {
+  display:block; box-sizing:border-box; text-align:center; text-decoration:none;
+  margin-top:10px; background:transparent; color:var(--amber);
+  border:1px solid var(--amber);
+}
+.sso-btn:hover { background:rgba(255,255,255,.04); }
 .lerr { margin-top:14px; font-size:11px; color:var(--red2); font-family:var(--mono); display:none; }
 
 /* ─── Shell ─── */
@@ -578,7 +586,7 @@ canvas { background: var(--bg); display:block; }
 <body>
 
 <!-- Login -->
-<div id="login">
+<div id="login" data-sso="__SSO_ENABLED__">
   <div class="lbox">
     <div class="lbox-head">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -593,6 +601,7 @@ canvas { background: var(--bg); display:block; }
       <label>Authentication Secret</label>
       <input type="password" id="ak" placeholder="••••••••••••••••••••••" onkeypress="if(event.key==='Enter')login()">
       <button class="lbtn" onclick="login()">Authenticate</button>
+      <a class="lbtn sso-btn" id="ssoBtn" href="/api/auth/oidc/login" style="display:none">Sign in with SSO</a>
       <div id="lerr" class="lerr">ERR: Invalid credentials. Access denied.</div>
     </div>
   </div>
@@ -1016,6 +1025,15 @@ function showLogin() {
   document.getElementById('app').classList.remove('show');
   document.getElementById('login').style.display = 'flex';
   if (tid) clearInterval(tid);
+  // Reveal the SSO button when the server reports OIDC is configured, and
+  // surface a failed SSO round-trip (?sso_error=1 from the callback).
+  const lg = document.getElementById('login');
+  if (lg && lg.dataset.sso === '1') document.getElementById('ssoBtn').style.display = 'block';
+  if (new URLSearchParams(location.search).has('sso_error')) {
+    const e = document.getElementById('lerr');
+    e.textContent = 'ERR: SSO sign-in failed. Please try again.';
+    e.style.display = 'block';
+  }
 }
 
 /* ── Clock ── */

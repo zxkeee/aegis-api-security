@@ -27,6 +27,7 @@ api-gateway/internal/api 60
 api-gateway/internal/store 80
 api-gateway/internal/audit 75
 api-gateway/internal/gateway 82
+api-gateway/internal/sso 85
 api-gateway/sdk/gatewayverify 90
 "
 

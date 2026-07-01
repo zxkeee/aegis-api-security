@@ -765,6 +765,7 @@ CIDR.
 | `admin_auth` | bool | Enable admin bearer-token authentication |
 | `admin_secret` | string | Admin bearer token (set via `AEGIS_ADMIN_SECRET`) |
 | `admin_cors` | object | Optional CORS policy for the admin plane; when unset the admin plane inherits `security.cors`. A wildcard origin is rejected when `admin_auth` is on |
+| `oidc` | object | Optional OpenID Connect single sign-on for the admin console (see [10.5](#105-identity-provider-integration)). Requires `admin_auth` and `forensic_dsn` |
 | `forensic_dsn` | string | PostgreSQL DSN; enables durable forensics and the discovery catalog (set via `AEGIS_FORENSIC_DSN`) |
 | `trusted_proxies` | list | Exact IPs/CIDRs of trusted reverse proxies for client-IP resolution |
 | `tls` | object | TLS termination at the gateway (`enabled`, `cert_file`, `key_file`) |
@@ -894,6 +895,12 @@ A security gateway is a high-value target and must be hardened.
 - **Defence in depth on mutating admin operations.** Endpoints that change state
   re-check authentication inside the handler, independent of the middleware, so a
   future routing mistake cannot expose them.
+- **Console single sign-on (OIDC).** Instead of sharing the bearer secret,
+  operators can sign in through your identity provider. AEGIS runs the
+  Authorization Code flow with PKCE, verifies the ID token against the provider
+  JWKS (issuer, audience, expiry, nonce), maps a group/role claim to the AEGIS
+  `admin`/`viewer`/super-admin model, and just-in-time provisions the user. See
+  [Section 10.5](#105-identity-provider-integration).
 - **Transport security.** Terminate TLS at the gateway (`tls` block) or at an
   upstream load balancer. The gateway emits HSTS and related security headers on
   every response.
@@ -1083,6 +1090,56 @@ AEGIS fetches and caches the provider's keys and validates RSA/ECDSA signatures,
 issuer and audience. To revoke a specific token immediately, post its `jti` to the
 admin revocation endpoint; AEGIS rejects it until the supplied TTL expires. Place
 health checks and genuinely public endpoints in `auth.exclude`.
+
+The section above governs **data-plane** JWT validation for proxied API traffic.
+The **admin console** has its own single sign-on, configured separately under the
+top-level `oidc` block.
+
+#### Console single sign-on (OIDC)
+
+Operators can sign in to the console through your identity provider instead of
+sharing the bearer secret. AEGIS implements the **Authorization Code flow with
+PKCE**:
+
+1. `GET /api/auth/oidc/login` mints a one-time `state`, `nonce` and PKCE
+   verifier (persisted server-side in Redis, single-use) and redirects to the
+   provider.
+2. The provider authenticates the operator (including any MFA it enforces) and
+   redirects back to `GET /api/auth/oidc/callback`.
+3. AEGIS validates `state` against the stored flow (consumed atomically via
+   `GETDEL`, so a replayed callback fails), exchanges the code for tokens using
+   the PKCE verifier, and verifies the **ID token** against the provider JWKS —
+   signature, issuer, audience, expiry, and `nonce`.
+4. It maps the ID-token claims to AEGIS's model: a configurable group/role claim
+   selects `admin`, `viewer`, or super-admin; an optional claim selects the
+   tenant. The operator is **just-in-time provisioned** as a console user (with a
+   non-password sentinel hash, so an SSO account can never be used with password
+   login), and the same server-side session + CSRF cookie password login issues
+   is established.
+
+```yaml
+oidc:
+  enabled: true
+  issuer: "https://your-tenant.okta.com"     # discovery doc fetched at startup (HTTPS)
+  client_id: ""                              # via AEGIS_OIDC_CLIENT_ID
+  client_secret: ""                          # via AEGIS_OIDC_CLIENT_SECRET
+  redirect_url: "https://console.example.com/api/auth/oidc/callback"
+  scopes: ["email", "profile", "groups"]     # "openid" is always added
+  roles_claim: "groups"
+  admin_roles: ["aegis-admins"]
+  super_admin_roles: ["aegis-superadmins"]
+  require_mapped_role: false                 # true = reject users in no admin group (else viewer)
+  tenant_claim: ""                           # optional; empty => default tenant
+  allowed_domains: []                        # optional email-domain allowlist
+```
+
+Client credentials come from the environment (`AEGIS_OIDC_CLIENT_ID`,
+`AEGIS_OIDC_CLIENT_SECRET`), never the config file. SSO requires `admin_auth`
+and `forensic_dsn` (users are provisioned in the iam store); startup validation
+enforces this and that `redirect_url` is HTTPS and ends in the callback path.
+Compatible with Okta, Auth0, Keycloak, Google, Azure AD and any standards
+-compliant OIDC provider. SAML, SCIM auto-provisioning and gateway-enforced MFA
+remain on the roadmap; most providers enforce MFA on their side during step 2.
 
 ### 10.6 Backend Trust and Signature Verification
 

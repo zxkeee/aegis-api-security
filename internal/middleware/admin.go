@@ -41,12 +41,13 @@ func AdminAuth(cfg config.GatewayConfig, log Logger, st adminStore, aud audit.Re
 				return
 			}
 
-			// Public endpoints: probes, the dashboard shell, and the login route.
+			// Public endpoints: probes, the dashboard shell, the login route, and
+			// the OIDC SSO flow (the flow itself IS the authentication).
 			switch r.URL.Path {
 			case "/health", "/readyz", "/":
 				next.ServeHTTP(w, r)
 				return
-			case "/api/login":
+			case "/api/login", "/api/auth/oidc/login", "/api/auth/oidc/callback":
 				next.ServeHTTP(w, r)
 				return
 			}

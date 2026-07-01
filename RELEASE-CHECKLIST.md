@@ -60,7 +60,15 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] **Real console authentication.** Static bearer in `sessionStorage` replaced
       with server-side sessions in Redis: HttpOnly session cookie (unreadable by
       JS/XSS) + CSRF double-submit token on mutations, with TTL. Bearer kept for
-      API/CLI. (Full OIDC/SAML SSO + `admin`/`viewer` roles + MFA remain P1.)
+      API/CLI. `admin`/`viewer` roles enforced. **OIDC single sign-on** now
+      implemented (`internal/sso`): Authorization Code flow with PKCE against the
+      provider discovery document, ID-token verification (signature via the
+      provider JWKS, issuer/audience/expiry, nonce), claim→tenant/role mapping,
+      and just-in-time user provisioning. `GET /api/auth/oidc/login` +
+      `/callback`; validated end-to-end against a local IdP with real RS256
+      crypto (`internal/sso` integration tests) and a live-PG callback test.
+      (SAML + SCIM + MFA remain P1 — most enterprises front OIDC with their own
+      MFA, so this unblocks the majority of SSO deals.)
 - [x] **Dependency CVE scanning.** `govulncheck` runs in CI; x/net bumped and
       toolchain pinned (go1.26.4) so the module and stdlib are CVE-clean.
 - [~] **Independent security testing.** Automated dynamic scan in place

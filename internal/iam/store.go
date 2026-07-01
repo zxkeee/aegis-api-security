@@ -2,7 +2,9 @@ package iam
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -63,11 +65,19 @@ CREATE TABLE IF NOT EXISTS admin_users (
 	super_admin   BOOLEAN NOT NULL DEFAULT FALSE,
 	created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- auth_source distinguishes password ('local') from SSO-provisioned ('oidc')
+-- accounts. Added idempotently so existing deployments migrate in place.
+ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS auth_source TEXT NOT NULL DEFAULT 'local';
 -- Email is unique per tenant (the same operator may legitimately exist in two
 -- tenants with the same email — they are separate accounts).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_users_email ON admin_users (tenant_id, lower(email));
 CREATE INDEX IF NOT EXISTS idx_admin_users_tenant ON admin_users (tenant_id);
 `
+
+// ssoPasswordSentinel is stored as the password_hash of SSO-provisioned users.
+// It is not a valid bcrypt hash, so bcrypt.CompareHashAndPassword always errors
+// and password login for an SSO account is impossible by construction.
+const ssoPasswordSentinel = "!sso-no-password-login"
 
 // Store is a PostgreSQL-backed identity store for tenants and admin users.
 type Store struct {
@@ -169,6 +179,55 @@ func (s *Store) CreateUser(ctx context.Context, u User, password string) error {
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
 		u.ID, u.TenantID, strings.ToLower(u.Email), string(hash), string(u.Role), u.SuperAdmin)
 	return err
+}
+
+// UpsertSSOUser just-in-time provisions (or updates) a console user that
+// authenticated via OIDC. Keyed by (tenant, lower(email)): a first-time SSO
+// login inserts the account; a returning user has their role/super-admin
+// re-synced from the current IdP claims, so a group change at the IdP takes
+// effect on next login. The password hash is a non-verifiable sentinel, so an
+// SSO account can never be used with password login. The tenant row is created
+// if missing so a claim-driven tenant does not dangle. Returns the stored user.
+func (s *Store) UpsertSSOUser(ctx context.Context, tenantID, email string, role Role, superAdmin bool) (User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO tenants (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING`, tenantID); err != nil {
+		return User{}, fmt.Errorf("iam: sso tenant upsert: %w", err)
+	}
+
+	idBytes := make([]byte, 12)
+	if _, err := rand.Read(idBytes); err != nil {
+		return User{}, err
+	}
+	newID := "u-" + hex.EncodeToString(idBytes)
+
+	var u User
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO admin_users (id, tenant_id, email, password_hash, role, super_admin, auth_source)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'oidc')
+		 ON CONFLICT (tenant_id, lower(email)) DO UPDATE
+		   SET role = EXCLUDED.role, super_admin = EXCLUDED.super_admin, auth_source = 'oidc'
+		 RETURNING id, tenant_id, email, role, super_admin, created_at`,
+		newID, tenantID, email, ssoPasswordSentinel, string(role), superAdmin,
+	).Scan(&u.ID, &u.TenantID, &u.Email, &u.Role, &u.SuperAdmin, &u.CreatedAt)
+	if err != nil {
+		return User{}, fmt.Errorf("iam: sso user upsert: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
+	if s.log != nil {
+		s.log.Info("iam: sso user provisioned", map[string]any{
+			"tenant": tenantID, "email": email, "role": string(role), "super": superAdmin,
+		})
+	}
+	return u, nil
 }
 
 // VerifyPassword looks up a user by tenant+email and verifies the password.

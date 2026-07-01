@@ -243,3 +243,25 @@ routes:
 #   export AEGIS_FORENSIC_DSN="postgres://user:pass@db-host:5432/aegis?sslmode=require"
 # Use sslmode=require (or verify-full) in production; sslmode=disable is for local dev only.
 # When unset the catalog is disabled and the Discovery middleware is a no-op.
+
+# ── Console single sign-on (OIDC) ────────────────────────────────────────────
+# Optional. Enables "Sign in with SSO" on the admin console via an external
+# OpenID Connect provider (Okta, Auth0, Keycloak, Google, Azure AD, …). Runs the
+# Authorization Code flow with PKCE, verifies the ID token, maps its claims to a
+# tenant + role, and just-in-time provisions the operator. Requires admin_auth
+# and forensic_dsn. Client credentials come from the environment:
+#   export AEGIS_OIDC_CLIENT_ID=...
+#   export AEGIS_OIDC_CLIENT_SECRET=...
+# oidc:
+#   enabled: true
+#   issuer: "https://your-tenant.okta.com"        # HTTPS; its discovery doc is fetched at startup
+#   client_id: ""                                  # via AEGIS_OIDC_CLIENT_ID
+#   client_secret: ""                              # via AEGIS_OIDC_CLIENT_SECRET
+#   redirect_url: "https://console.example.com/api/auth/oidc/callback"  # must end in this path
+#   scopes: ["email", "profile", "groups"]         # "openid" is always added
+#   roles_claim: "groups"                          # claim carrying group/role membership
+#   admin_roles: ["aegis-admins"]                  # group values that grant the admin role
+#   super_admin_roles: ["aegis-superadmins"]       # group values that grant cross-tenant super-admin
+#   require_mapped_role: false                     # true = reject users matching no admin group (else viewer)
+#   tenant_claim: ""                               # optional claim carrying the tenant id (empty => default)
+#   allowed_domains: []                            # optional email-domain allowlist
