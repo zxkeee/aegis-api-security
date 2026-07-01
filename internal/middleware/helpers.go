@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"api-gateway/internal/secevent"
@@ -24,14 +26,21 @@ func (sw *statusWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
-// trustedProxyNets holds pre-parsed CIDRs set once at startup via InitTrustedProxies.
-// Reads happen on every request (hot path) so we avoid locks by making it immutable
-// after init — a new slice is swapped in atomically via package-level replace at startup.
-var trustedProxyNets []*net.IPNet
+// Unwrap exposes the underlying writer to http.ResponseController, so Flush
+// (SSE) and Hijack (WebSocket) initiated by the reverse proxy reach the real
+// connection through this wrapper.
+func (sw *statusWriter) Unwrap() http.ResponseWriter { return sw.ResponseWriter }
 
-// InitTrustedProxies parses CIDR strings (or bare IPs) from config and caches them.
-// Must be called once from main() before starting servers. Bare IPs are normalised
-// to /32 (IPv4) or /128 (IPv6) host routes.
+// trustedProxyNets holds pre-parsed CIDRs set via InitTrustedProxies. It is an
+// atomic pointer (not a plain slice) because InitTrustedProxies also runs on
+// config hot-reload, concurrently with RealIP reads on the request hot path.
+// An atomic load per request is effectively free; the slice itself is immutable.
+var trustedProxyNets atomic.Pointer[[]*net.IPNet]
+
+// InitTrustedProxies parses CIDR strings (or bare IPs) from config and caches
+// them. Called from main() before the servers start and again on every config
+// hot-reload, so trusted_proxies changes take effect without a restart. Bare
+// IPs are normalised to /32 (IPv4) or /128 (IPv6) host routes.
 func InitTrustedProxies(cidrs []string) error {
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, s := range cidrs {
@@ -49,7 +58,16 @@ func InitTrustedProxies(cidrs []string) error {
 		}
 		nets = append(nets, ipNet)
 	}
-	trustedProxyNets = nets
+	trustedProxyNets.Store(&nets)
+	return nil
+}
+
+// loadTrustedProxyNets returns the current immutable CIDR slice (nil when
+// none configured).
+func loadTrustedProxyNets() []*net.IPNet {
+	if p := trustedProxyNets.Load(); p != nil {
+		return *p
+	}
 	return nil
 }
 
@@ -66,7 +84,8 @@ func InitTrustedProxies(cidrs []string) error {
 func RealIP(r *http.Request) string {
 	remoteHost, _, _ := net.SplitHostPort(r.RemoteAddr)
 
-	if len(trustedProxyNets) == 0 {
+	nets := loadTrustedProxyNets()
+	if len(nets) == 0 {
 		return remoteHost
 	}
 
@@ -87,7 +106,7 @@ func RealIP(r *http.Request) string {
 		if ip == nil {
 			continue
 		}
-		if isTrustedProxyIP(ip) {
+		if isTrustedProxyIP(nets, ip) {
 			continue
 		}
 		return chain[i]
@@ -97,8 +116,8 @@ func RealIP(r *http.Request) string {
 	return remoteHost
 }
 
-func isTrustedProxyIP(ip net.IP) bool {
-	for _, n := range trustedProxyNets {
+func isTrustedProxyIP(nets []*net.IPNet, ip net.IP) bool {
+	for _, n := range nets {
 		if n.Contains(ip) {
 			return true
 		}
@@ -111,7 +130,8 @@ func isTrustedProxyIP(ip net.IP) bool {
 // by that upstream (e.g. a Cloudflare-supplied JA3 hash). With no trusted
 // proxies configured, nothing is trusted.
 func RemotePeerTrusted(r *http.Request) bool {
-	if len(trustedProxyNets) == 0 {
+	nets := loadTrustedProxyNets()
+	if len(nets) == 0 {
 		return false
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -119,7 +139,7 @@ func RemotePeerTrusted(r *http.Request) bool {
 		host = r.RemoteAddr
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && isTrustedProxyIP(ip)
+	return ip != nil && isTrustedProxyIP(nets, ip)
 }
 
 // SecurityDeny logs, records metrics/forensics, and responds with an error.
@@ -142,12 +162,20 @@ func SecurityDeny(w http.ResponseWriter, r *http.Request,
 	http.Error(w, "Access Denied", code)
 }
 
-// RequestID injects a unique X-Request-ID header for log correlation.
+// requestIDShape bounds a client-supplied X-Request-ID: short, and only
+// characters that are safe to echo into logs, response headers and upstream
+// requests. Anything else is replaced with a generated ID rather than
+// propagated verbatim.
+var requestIDShape = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// RequestID injects a unique X-Request-ID header for log correlation. A
+// well-formed client-supplied ID is preserved (so traces can span systems);
+// malformed or oversized values are discarded and regenerated.
 func RequestID() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := r.Header.Get("X-Request-ID")
-			if id == "" {
+			if !requestIDShape.MatchString(id) {
 				b := make([]byte, 8)
 				rand.Read(b) //nolint:errcheck
 				id = hex.EncodeToString(b)
@@ -165,7 +193,9 @@ func SecurityHeaders() Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("X-Frame-Options", "DENY")
-			w.Header().Set("X-XSS-Protection", "1; mode=block")
+			// X-XSS-Protection is deliberately NOT set: the header is deprecated,
+			// ignored by every current browser, and its legacy filter enabled
+			// XS-Leaks in older ones. CSP (set by the dashboard) is the control.
 			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")

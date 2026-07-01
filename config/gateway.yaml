@@ -16,6 +16,17 @@ admin_session_ttl: 8h
 # HTTP locally. NEVER enable in production.
 admin_cookie_insecure: false
 
+# Optional CORS policy for the admin plane. When unset, the admin plane
+# inherits security.cors. Set it when console origins differ from data-plane
+# API origins — sharing one list lets every customer web-app origin make
+# credentialed admin-API requests. Wildcard is rejected with admin_auth on.
+# admin_cors:
+#   enabled: true
+#   allow_origins: ["https://console.example.com"]
+#   allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+#   allow_headers: ["Content-Type", "Authorization", "X-CSRF-Token"]
+#   max_age: 86400
+
 # require_tls makes startup fail unless TLS is terminated at the gateway. Set it
 # in production; leave false only when a trusted upstream terminates TLS.
 require_tls: false

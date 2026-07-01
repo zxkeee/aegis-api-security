@@ -1,12 +1,16 @@
 package proxy
 
 import (
+	"bufio"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/logger"
@@ -125,14 +129,17 @@ func TestProxy_POSTNotRetried(t *testing.T) {
 }
 
 func TestAttemptWriter_BuffersThenCommits(t *testing.T) {
-	aw := &attemptWriter{header: make(http.Header), status: http.StatusOK}
+	rec := httptest.NewRecorder()
+	aw := &attemptWriter{dst: rec, header: make(http.Header), status: http.StatusOK}
 	aw.Header().Set("X-Test", "v")
 	aw.WriteHeader(http.StatusCreated)
 	aw.WriteHeader(http.StatusTeapot) // second call ignored
 	_, _ = aw.Write([]byte("payload"))
 
-	rec := httptest.NewRecorder()
-	aw.commit(rec)
+	if rec.Body.Len() != 0 {
+		t.Fatalf("bytes reached the client before commit: %q", rec.Body.String())
+	}
+	aw.commit()
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("committed status = %d, want 201", rec.Code)
@@ -143,9 +150,194 @@ func TestAttemptWriter_BuffersThenCommits(t *testing.T) {
 }
 
 func TestAttemptWriter_WriteImplicitOK(t *testing.T) {
-	aw := &attemptWriter{header: make(http.Header)}
+	aw := &attemptWriter{dst: httptest.NewRecorder(), header: make(http.Header)}
 	_, _ = aw.Write([]byte("x")) // Write without WriteHeader defaults to 200
 	if aw.status != http.StatusOK || !aw.wrote {
 		t.Fatalf("implicit WriteHeader failed: status=%d wrote=%v", aw.status, aw.wrote)
+	}
+}
+
+// A Flush while buffering must commit what is already buffered to the real
+// writer and switch to passthrough — this is what keeps SSE streaming through
+// a buffered retry attempt instead of stalling until the stream ends.
+func TestAttemptWriter_FlushCommitsAndStreams(t *testing.T) {
+	rec := httptest.NewRecorder()
+	aw := &attemptWriter{dst: rec, header: make(http.Header), status: http.StatusOK}
+	aw.Header().Set("Content-Type", "text/event-stream")
+	aw.WriteHeader(http.StatusOK)
+	_, _ = aw.Write([]byte("data: one\n\n"))
+	aw.Flush()
+
+	if !aw.streamed {
+		t.Fatal("Flush did not switch the writer to streamed mode")
+	}
+	if got := rec.Body.String(); got != "data: one\n\n" {
+		t.Fatalf("first chunk not delivered on Flush: %q", got)
+	}
+	if rec.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("headers not committed on Flush: %v", rec.Header())
+	}
+	if !rec.Flushed {
+		t.Fatal("flush was not propagated to the underlying writer")
+	}
+
+	// Subsequent writes go straight through.
+	_, _ = aw.Write([]byte("data: two\n\n"))
+	if got := rec.Body.String(); got != "data: one\n\ndata: two\n\n" {
+		t.Fatalf("post-flush write was buffered: %q", got)
+	}
+}
+
+// SSE must stream through the gateway in real time even when the retry path
+// (buffered first attempt) is active. The old http.TimeoutHandler wrapper made
+// this impossible: it buffered the whole response and implemented no Flusher.
+func TestProxy_SSEStreamsThroughRetryPath(t *testing.T) {
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: one\n\n")
+		fl.Flush()
+		<-release // hold the stream open until the client confirms receipt
+		_, _ = io.WriteString(w, "data: two\n\n")
+		fl.Flush()
+	}))
+	defer backend.Close()
+
+	gw := testGW(t, []config.RouteConfig{{
+		Path: "/", Upstreams: []string{backend.URL}, RetryAttempts: 2, // retry path = buffered attempt
+	}})
+	srv := httptest.NewServer(gw)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/events")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// The first chunk must arrive while the backend is still holding the stream
+	// open. If the gateway buffers, this read blocks and the test times out.
+	buf := make([]byte, 64)
+	type readResult struct {
+		n   int
+		err error
+	}
+	got := make(chan readResult, 1)
+	go func() {
+		n, err := resp.Body.Read(buf)
+		got <- readResult{n, err}
+	}()
+	select {
+	case r := <-got:
+		if r.err != nil || !strings.Contains(string(buf[:r.n]), "data: one") {
+			t.Fatalf("first SSE chunk not streamed: n=%d err=%v body=%q", r.n, r.err, buf[:r.n])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("gateway buffered the SSE stream: first chunk never arrived while stream open")
+	}
+
+	close(release)
+	rest, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(rest), "data: two") {
+		t.Fatalf("second SSE chunk lost: %q", rest)
+	}
+}
+
+// The per-route timeout is now a time-to-response-headers bound on the
+// transport. A stalled upstream must fail the attempt and fail over to the
+// healthy one instead of hanging.
+func TestProxy_HeaderTimeoutFailsOverToHealthy(t *testing.T) {
+	stall := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second): // never answer within the route timeout
+		}
+	}))
+	defer stall.Close()
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer healthy.Close()
+
+	gw := testGW(t, []config.RouteConfig{{
+		Path: "/", Upstreams: []string{stall.URL, healthy.URL}, RetryAttempts: 2, Timeout: "200ms",
+	}})
+
+	deadline := time.Now().Add(10 * time.Second)
+	var sawOK bool
+	for i := 0; i < 4 && time.Now().Before(deadline); i++ {
+		rec := httptest.NewRecorder()
+		gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code == http.StatusOK && rec.Body.String() == "ok" {
+			sawOK = true
+			break
+		}
+	}
+	if !sawOK {
+		t.Fatal("request never failed over from the stalled upstream to the healthy one")
+	}
+}
+
+// Protocol upgrades (WebSocket) must pass through the gateway: the reverse
+// proxy hijacks the client connection, which requires every writer between it
+// and the server to support Hijack (directly or via Unwrap).
+func TestProxy_WebSocketUpgradePassesThrough(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "websocket" {
+			http.Error(w, "expected upgrade", http.StatusBadRequest)
+			return
+		}
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("backend hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		_ = rw.Flush()
+		line, _ := rw.ReadString('\n') // echo one line back
+		_, _ = rw.WriteString("echo:" + line)
+		_ = rw.Flush()
+	}))
+	defer backend.Close()
+
+	gw := testGW(t, []config.RouteConfig{{
+		Path: "/", Upstreams: []string{backend.URL}, RetryAttempts: 2,
+	}})
+	srv := httptest.NewServer(gw)
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	_, _ = fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	if err != nil || !strings.Contains(status, "101") {
+		t.Fatalf("upgrade did not pass through the gateway: status=%q err=%v", status, err)
+	}
+	// Skip response headers.
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading upgrade headers: %v", err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	// Bidirectional bytes over the upgraded connection.
+	_, _ = fmt.Fprintf(conn, "ping\n")
+	echoed, err := br.ReadString('\n')
+	if err != nil || echoed != "echo:ping\n" {
+		t.Fatalf("upgraded connection is not bidirectional: %q err=%v", echoed, err)
 	}
 }

@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -34,6 +36,23 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 			return nil, fmt.Errorf("route %s has no upstreams", route.Path)
 		}
 
+		timeout := 30 * time.Second
+		if route.Timeout != "" {
+			if d, err := time.ParseDuration(route.Timeout); err == nil {
+				timeout = d
+			}
+		}
+
+		// One transport per route enforces the upstream timeout as a
+		// time-to-response-headers bound. The previous http.TimeoutHandler wrapper
+		// is gone: it buffered every response fully in memory (unbounded — a large
+		// upstream body times concurrency was an OOM vector) and implements
+		// neither Flusher nor Hijacker, which silently broke SSE and WebSocket
+		// despite the DLP layer supporting both. Body streaming time is bounded by
+		// the server's WriteTimeout, not per-route config.
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.ResponseHeaderTimeout = timeout
+
 		upstreams := make([]*upstream, 0, len(route.Upstreams))
 		for _, u := range route.Upstreams {
 			target, err := url.Parse(u)
@@ -48,6 +67,7 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 
 			// FIX BUG-6: Wire circuit breaker into the error handler
 			proxy := httputil.NewSingleHostReverseProxy(target)
+			proxy.Transport = transport
 			proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 				up.cb.recordFailure() // <-- Circuit breaker now records failures
 				log.Error("proxy error", map[string]any{
@@ -56,10 +76,15 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 					"path":     r.URL.Path,
 				})
 				// If we're buffering this attempt for possible retry, just flag the
-				// failure instead of committing a 502 to the client.
-				if aw, ok := w.(*attemptWriter); ok {
+				// failure instead of committing a 502 to the client — unless bytes
+				// already streamed to the client, in which case the response is
+				// unsalvageable either way.
+				if aw, ok := w.(*attemptWriter); ok && !aw.streamed {
 					aw.failed = true
 					return
+				}
+				if aw, ok := w.(*attemptWriter); ok && aw.streamed {
+					return // partial response already on the wire; nothing to write
 				}
 				http.Error(w, "Bad Gateway", http.StatusBadGateway)
 			}
@@ -76,13 +101,6 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 
 		lb := newLoadBalancer(upstreams, route.LoadBalance)
 
-		timeout := 30 * time.Second
-		if route.Timeout != "" {
-			if d, err := time.ParseDuration(route.Timeout); err == nil {
-				timeout = d
-			}
-		}
-
 		retries := route.RetryAttempts
 		if retries <= 0 {
 			retries = 1
@@ -91,7 +109,6 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 		// FIX BUG-5: Capture loop variables explicitly for Go < 1.22 compatibility
 		routePath := route.Path
 		routeLB := lb
-		routeTimeout := timeout
 		routeRetries := retries
 
 		gw.mux.HandleFunc(routePath, func(w http.ResponseWriter, r *http.Request) {
@@ -119,15 +136,21 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 				// For non-retryable requests (or the final attempt) stream the
 				// response straight to the client — no point buffering.
 				if !retryable || lastAttempt {
-					http.TimeoutHandler(up.proxy, routeTimeout, "Gateway Timeout").ServeHTTP(w, r)
+					up.proxy.ServeHTTP(w, r)
 					return
 				}
 
 				// Buffer this attempt so a transport failure can fall through to
 				// the next upstream without a partial response reaching the client.
-				aw := &attemptWriter{header: make(http.Header), status: http.StatusOK}
-				http.TimeoutHandler(up.proxy, routeTimeout, "Gateway Timeout").ServeHTTP(aw, r)
+				// A Flush (SSE) or Hijack (WebSocket) commits straight to the real
+				// writer instead — once bytes are on the wire a retry is impossible
+				// anyway, and buffering would break the stream.
+				aw := &attemptWriter{dst: w, header: make(http.Header), status: http.StatusOK}
+				up.proxy.ServeHTTP(aw, r)
 
+				if aw.streamed {
+					return // response (or part of it) already delivered
+				}
 				if aw.failed {
 					log.Warn("proxy: upstream failed, retrying next", map[string]any{
 						"upstream": up.url.String(),
@@ -136,7 +159,7 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 					continue
 				}
 
-				aw.commit(w)
+				aw.commit()
 				return
 			}
 
@@ -176,17 +199,34 @@ func isRetryable(r *http.Request) bool {
 // attemptWriter buffers a single proxy attempt so that, on transport failure,
 // the gateway can retry the next upstream without having sent partial bytes to
 // the client. On success the buffered response is committed verbatim.
+//
+// Streaming escape hatches: a Flush (the reverse proxy flushes immediately for
+// text/event-stream and unknown-length streaming bodies) commits the buffered
+// state to the real writer and switches to passthrough; a Hijack (WebSocket /
+// protocol upgrade) hands the connection over directly. In both cases
+// `streamed` is set, telling the retry loop that this response is already on
+// the wire and no further attempt may run.
 type attemptWriter struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
-	failed bool // set by the proxy ErrorHandler on transport failure
-	wrote  bool
+	dst      http.ResponseWriter
+	header   http.Header
+	status   int
+	body     bytes.Buffer
+	failed   bool // set by the proxy ErrorHandler on transport failure
+	wrote    bool
+	streamed bool // committed to dst mid-flight (Flush/Hijack); retry impossible
 }
 
-func (a *attemptWriter) Header() http.Header { return a.header }
+func (a *attemptWriter) Header() http.Header {
+	if a.streamed {
+		return a.dst.Header()
+	}
+	return a.header
+}
 
 func (a *attemptWriter) WriteHeader(code int) {
+	if a.streamed {
+		return // header already committed to dst
+	}
 	if a.wrote {
 		return
 	}
@@ -195,20 +235,55 @@ func (a *attemptWriter) WriteHeader(code int) {
 }
 
 func (a *attemptWriter) Write(b []byte) (int, error) {
+	if a.streamed {
+		return a.dst.Write(b)
+	}
 	if !a.wrote {
 		a.WriteHeader(http.StatusOK)
 	}
 	return a.body.Write(b)
 }
 
-// commit flushes the buffered headers, status, and body to the real writer.
-func (a *attemptWriter) commit(w http.ResponseWriter) {
-	dst := w.Header()
+// commit flushes the buffered headers, status, and body to the real writer and
+// switches the writer into passthrough mode.
+func (a *attemptWriter) commit() {
+	if a.streamed {
+		return
+	}
+	dst := a.dst.Header()
 	for k, vs := range a.header {
 		dst[k] = vs
 	}
-	w.WriteHeader(a.status)
-	w.Write(a.body.Bytes()) //nolint:errcheck
+	a.dst.WriteHeader(a.status)
+	if a.body.Len() > 0 {
+		a.dst.Write(a.body.Bytes()) //nolint:errcheck
+		a.body.Reset()
+	}
+	a.streamed = true
+}
+
+// Flush implements http.Flusher: the response has begun streaming, so commit
+// everything buffered so far and pass the flush through. The reverse proxy
+// calls this immediately for Content-Type: text/event-stream, which is what
+// keeps SSE working through the gateway even on buffered retry attempts.
+// ResponseController is used (rather than a direct type assertion) so the
+// flush reaches the real writer through any middleware wrappers that expose
+// Unwrap().
+func (a *attemptWriter) Flush() {
+	a.commit()
+	_ = http.NewResponseController(a.dst).Flush()
+}
+
+// Hijack implements http.Hijacker so protocol upgrades (WebSocket) work on
+// buffered retry attempts: the connection is handed to the caller and this
+// attempt can never be retried.
+func (a *attemptWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(a.dst).Hijack()
+	if err != nil {
+		return nil, nil, fmt.Errorf("proxy: hijack: %w", err)
+	}
+	a.streamed = true
+	return conn, rw, nil
 }
 
 // ── Load Balancer ─────────────────────────────────────────────────────────────

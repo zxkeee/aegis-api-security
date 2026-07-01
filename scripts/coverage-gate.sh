@@ -20,7 +20,7 @@ api-gateway/internal/alert 75
 api-gateway/internal/tlsfp 95
 api-gateway/internal/tenant 100
 api-gateway/internal/iam 75
-api-gateway/internal/proxy 89
+api-gateway/internal/proxy 92
 api-gateway/internal/discovery 80
 api-gateway/internal/classify 90
 api-gateway/internal/api 60

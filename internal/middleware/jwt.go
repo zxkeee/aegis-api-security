@@ -42,21 +42,31 @@ func NewJWTAuth(cfg config.AuthConfig, log Logger, st RevocationChecker) *JWTAut
 	return ja
 }
 
-// initJWKS fetches and caches JWKS keys from the configured URL.
-// Retries on failure with exponential backoff.
+// jwksMaxBackoff caps the retry interval of the background JWKS fetch loop.
+const jwksMaxBackoff = 5 * time.Minute
+
+// initJWKS fetches and caches JWKS keys from the configured URL, retrying
+// FOREVER with capped exponential backoff. Validation fails closed while the
+// keys are absent (see keyFunc), so giving up after a fixed number of attempts
+// — as this used to — turned a transient IdP outage at gateway boot into a
+// permanent 401 for all traffic until a manual restart. Once the initial fetch
+// succeeds, keyfunc refreshes keys in the background on its own.
 func (ja *JWTAuth) initJWKS() {
 	backoff := 2 * time.Second
 
-	for attempt := 1; attempt <= 5; attempt++ {
+	for attempt := 1; ; attempt++ {
 		k, err := keyfunc.NewDefault([]string{ja.cfg.JWKSURL})
 		if err != nil {
-			ja.log.Error("jwks: fetch failed", map[string]any{
-				"url":     ja.cfg.JWKSURL,
-				"attempt": attempt,
-				"error":   err.Error(),
+			ja.log.Error("jwks: fetch failed (all tokens are rejected until keys load); will retry", map[string]any{
+				"url":      ja.cfg.JWKSURL,
+				"attempt":  attempt,
+				"retry_in": backoff.String(),
+				"error":    err.Error(),
 			})
 			time.Sleep(backoff)
-			backoff *= 2
+			if backoff *= 2; backoff > jwksMaxBackoff {
+				backoff = jwksMaxBackoff
+			}
 			continue
 		}
 
@@ -69,10 +79,6 @@ func (ja *JWTAuth) initJWKS() {
 		})
 		return
 	}
-
-	ja.log.Error("jwks: all fetch attempts failed, JWKS validation unavailable", map[string]any{
-		"url": ja.cfg.JWKSURL,
-	})
 }
 
 // keyFunc returns the appropriate key function based on configuration.

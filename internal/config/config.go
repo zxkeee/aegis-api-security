@@ -53,6 +53,12 @@ type GatewayConfig struct {
 	// console works over plain HTTP in local development. Never enable in
 	// production: the session cookie would be sent over unencrypted connections.
 	AdminCookieInsecure bool `yaml:"admin_cookie_insecure"`
+	// AdminCORS is the CORS policy for the admin plane. The console is normally
+	// same-origin (served by the admin server itself), so this stays unset and
+	// the admin plane inherits security.cors. Set it when the console origins
+	// differ from the data-plane API origins — sharing one list would otherwise
+	// let every customer web-app origin make credentialed admin-API requests.
+	AdminCORS *CORSConfig `yaml:"admin_cors"`
 	// RequireTLS makes startup fail unless TLS is terminated at the gateway
 	// (tls.enabled). Set it in production. Leave false only when TLS is terminated
 	// by a trusted upstream (ingress / load balancer) in front of AEGIS.
@@ -461,6 +467,30 @@ func Validate(cfg GatewayConfig) error {
 	if err := validateMultitenancy(cfg); err != nil {
 		return err
 	}
+	if err := validateRoutes(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateRoutes rejects route options that would otherwise degrade silently.
+// In particular an unknown load_balance strategy used to fall back to
+// round-robin without any signal — an operator asking for "least_conn" got
+// different behaviour than configured.
+func validateRoutes(cfg GatewayConfig) error {
+	for _, r := range cfg.Routes {
+		switch r.LoadBalance {
+		case "", "round_robin":
+		default:
+			return fmt.Errorf("route %q: unsupported load_balance %q (supported: round_robin)",
+				r.Path, r.LoadBalance)
+		}
+		if r.Timeout != "" {
+			if _, err := time.ParseDuration(r.Timeout); err != nil {
+				return fmt.Errorf("route %q: invalid timeout %q: %w", r.Path, r.Timeout, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -615,6 +645,14 @@ func validateTLS(cfg GatewayConfig) error {
 }
 
 func validateCORS(cfg GatewayConfig) error {
+	// The admin plane authenticates with cookies, so a wildcard there is unsafe
+	// regardless of the JWT setting. Checked before the data-plane early return:
+	// admin_cors is independent of security.cors.enabled.
+	if ac := cfg.AdminCORS; ac != nil && ac.Enabled && cfg.AdminAuth &&
+		len(ac.AllowOrigins) == 1 && ac.AllowOrigins[0] == "*" {
+		return errors.New("admin_cors.allow_origins: [\"*\"] is incompatible with admin_auth; " +
+			"list explicit console origins in admin_cors.allow_origins")
+	}
 	if !cfg.Security.CORS.Enabled {
 		return nil
 	}

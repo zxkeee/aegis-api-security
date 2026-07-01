@@ -261,3 +261,43 @@ func TestPathHasPrefix_SegmentBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestValidate_Routes(t *testing.T) {
+	t.Run("unknown load_balance rejected", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Routes = []RouteConfig{{Path: "/x", Upstreams: []string{"http://b:1"}, LoadBalance: "least_conn"}}
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "load_balance") {
+			t.Fatalf("unsupported load_balance must be rejected, got %v", err)
+		}
+	})
+	t.Run("round_robin and empty accepted", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Routes = []RouteConfig{
+			{Path: "/a", Upstreams: []string{"http://b:1"}, LoadBalance: "round_robin"},
+			{Path: "/b", Upstreams: []string{"http://b:2"}},
+		}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("valid routes rejected: %v", err)
+		}
+	})
+	t.Run("invalid timeout rejected", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Routes = []RouteConfig{{Path: "/x", Upstreams: []string{"http://b:1"}, Timeout: "half-an-hour"}}
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Fatalf("invalid route timeout must be rejected, got %v", err)
+		}
+	})
+}
+
+func TestValidate_AdminCORSWildcardRejected(t *testing.T) {
+	cfg := validBase()
+	cfg.AdminCORS = &CORSConfig{Enabled: true, AllowOrigins: []string{"*"}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "admin_cors") {
+		t.Fatalf("wildcard admin_cors with admin_auth must be rejected, got %v", err)
+	}
+	// Explicit origins are fine.
+	cfg.AdminCORS = &CORSConfig{Enabled: true, AllowOrigins: []string{"https://console.example.com"}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("explicit admin_cors origin rejected: %v", err)
+	}
+}

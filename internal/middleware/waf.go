@@ -158,3 +158,7 @@ func (w *wafStatusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap exposes the underlying writer to http.ResponseController (Flush/Hijack
+// pass-through for SSE and WebSocket).
+func (w *wafStatusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

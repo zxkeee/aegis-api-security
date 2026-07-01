@@ -271,3 +271,40 @@ func TestObservationFrom_NilWhenAbsent(t *testing.T) {
 		t.Fatal("no obs in ctx must yield nil")
 	}
 }
+
+func TestRequestID_RejectsMalformedClientID(t *testing.T) {
+	for _, bad := range []string{
+		"has spaces",
+		"inject\r\nX-Evil: 1",
+		strings.Repeat("a", 65), // over the 64-char cap
+		"кириллица",
+	} {
+		var seen string
+		h := RequestID()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			seen = r.Header.Get("X-Request-ID")
+		}))
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header["X-Request-Id"] = []string{bad} // bypass Set's canonicalisation guards
+		h.ServeHTTP(httptest.NewRecorder(), r)
+		if seen == bad {
+			t.Fatalf("malformed client id %q propagated verbatim", bad)
+		}
+		if len(seen) != 16 {
+			t.Fatalf("malformed id must be replaced with a generated one, got %q", seen)
+		}
+	}
+}
+
+func TestSecurityHeaders_NoDeprecatedXSSHeader(t *testing.T) {
+	h := SecurityHeaders()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if _, present := rec.Header()["X-Xss-Protection"]; present {
+		t.Fatal("deprecated X-XSS-Protection must not be emitted")
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("core security headers must still be present")
+	}
+}

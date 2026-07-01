@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"api-gateway/internal/config"
@@ -89,5 +92,60 @@ func TestChain_PostureMatchesEnforcement(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/open", nil))
 	if !reached {
 		t.Fatalf("/open: expected passthrough to backend, got status %d", rec.Code)
+	}
+}
+
+// loadValidatedConfig is the shared gate for startup AND hot-reload: a config
+// that fails Validate must be rejected in both paths (hot-reload used to skip
+// validation entirely, letting an unsafe edit go live).
+func TestLoadValidatedConfig_RejectsUnsafeConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	good := write("good.yaml", `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis:
+  password: "redis-pass"
+trusted_proxies: ["10.0.0.0/8"]
+`)
+	if _, err := loadValidatedConfig(good); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+
+	cases := map[string]string{
+		"placeholder admin secret": `
+admin_auth: true
+admin_secret: "changeme"
+redis: {password: "redis-pass"}
+`,
+		"invalid trusted_proxies": `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+trusted_proxies: ["not-an-ip"]
+`,
+		"unsupported load_balance": `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+routes:
+  - path: "/x"
+    upstreams: ["http://b:1"]
+    load_balance: "least_conn"
+`,
+	}
+	for name, body := range cases {
+		p := write(strings.ReplaceAll(name, " ", "-")+".yaml", body)
+		if _, err := loadValidatedConfig(p); err == nil {
+			t.Fatalf("%s: unsafe config accepted", name)
+		}
 	}
 }
