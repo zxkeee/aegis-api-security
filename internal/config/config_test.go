@@ -261,3 +261,123 @@ func TestPathHasPrefix_SegmentBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestValidate_Routes(t *testing.T) {
+	t.Run("unknown load_balance rejected", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Routes = []RouteConfig{{Path: "/x", Upstreams: []string{"http://b:1"}, LoadBalance: "least_conn"}}
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "load_balance") {
+			t.Fatalf("unsupported load_balance must be rejected, got %v", err)
+		}
+	})
+	t.Run("round_robin and empty accepted", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Routes = []RouteConfig{
+			{Path: "/a", Upstreams: []string{"http://b:1"}, LoadBalance: "round_robin"},
+			{Path: "/b", Upstreams: []string{"http://b:2"}},
+		}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("valid routes rejected: %v", err)
+		}
+	})
+	t.Run("invalid timeout rejected", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Routes = []RouteConfig{{Path: "/x", Upstreams: []string{"http://b:1"}, Timeout: "half-an-hour"}}
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Fatalf("invalid route timeout must be rejected, got %v", err)
+		}
+	})
+}
+
+func TestValidate_AdminCORSWildcardRejected(t *testing.T) {
+	cfg := validBase()
+	cfg.AdminCORS = &CORSConfig{Enabled: true, AllowOrigins: []string{"*"}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "admin_cors") {
+		t.Fatalf("wildcard admin_cors with admin_auth must be rejected, got %v", err)
+	}
+	// Explicit origins are fine.
+	cfg.AdminCORS = &CORSConfig{Enabled: true, AllowOrigins: []string{"https://console.example.com"}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("explicit admin_cors origin rejected: %v", err)
+	}
+}
+
+func oidcBase() GatewayConfig {
+	c := validBase()
+	c.ForensicDSN = "postgres://x/y"
+	c.OIDC = OIDCConfig{
+		Enabled:      true,
+		Issuer:       "https://idp.example.com",
+		ClientID:     "cid",
+		ClientSecret: "csecret",
+		RedirectURL:  "https://console.example.com/api/auth/oidc/callback",
+	}
+	return c
+}
+
+func TestValidate_OIDC(t *testing.T) {
+	if err := Validate(oidcBase()); err != nil {
+		t.Fatalf("valid oidc config rejected: %v", err)
+	}
+
+	t.Run("requires admin_auth", func(t *testing.T) {
+		c := oidcBase()
+		c.AdminAuth = false
+		c.AdminSecret = ""
+		if err := Validate(c); err == nil || !strings.Contains(err.Error(), "admin_auth") {
+			t.Fatalf("oidc without admin_auth must be rejected, got %v", err)
+		}
+	})
+	t.Run("requires forensic_dsn", func(t *testing.T) {
+		c := oidcBase()
+		c.ForensicDSN = ""
+		if err := Validate(c); err == nil || !strings.Contains(err.Error(), "forensic_dsn") {
+			t.Fatalf("oidc without forensic_dsn must be rejected, got %v", err)
+		}
+	})
+	t.Run("issuer must be https", func(t *testing.T) {
+		c := oidcBase()
+		c.OIDC.Issuer = "http://idp.example.com"
+		if err := Validate(c); err == nil || !strings.Contains(err.Error(), "issuer") {
+			t.Fatalf("non-https issuer must be rejected, got %v", err)
+		}
+	})
+	t.Run("client id/secret required", func(t *testing.T) {
+		c := oidcBase()
+		c.OIDC.ClientID = ""
+		if err := Validate(c); err == nil {
+			t.Fatal("missing client_id must be rejected")
+		}
+		c = oidcBase()
+		c.OIDC.ClientSecret = ""
+		if err := Validate(c); err == nil {
+			t.Fatal("missing client_secret must be rejected")
+		}
+	})
+	t.Run("redirect must be https callback path", func(t *testing.T) {
+		c := oidcBase()
+		c.OIDC.RedirectURL = "https://console.example.com/wrong"
+		if err := Validate(c); err == nil || !strings.Contains(err.Error(), "callback") {
+			t.Fatalf("redirect not ending in the callback path must be rejected, got %v", err)
+		}
+		c = oidcBase()
+		c.OIDC.RedirectURL = "http://console.example.com/api/auth/oidc/callback"
+		if err := Validate(c); err == nil {
+			t.Fatal("http redirect must be rejected unless admin_cookie_insecure")
+		}
+		c.AdminCookieInsecure = true
+		if err := Validate(c); err != nil {
+			t.Fatalf("http redirect with admin_cookie_insecure should pass: %v", err)
+		}
+	})
+}
+
+func TestApplyEnvOverrides_OIDCSecrets(t *testing.T) {
+	t.Setenv("AEGIS_OIDC_CLIENT_ID", "env-cid")
+	t.Setenv("AEGIS_OIDC_CLIENT_SECRET", "env-secret")
+	c := GatewayConfig{}
+	applyEnvOverrides(&c)
+	if c.OIDC.ClientID != "env-cid" || c.OIDC.ClientSecret != "env-secret" {
+		t.Fatalf("oidc secrets not overridden from env: %+v", c.OIDC)
+	}
+}

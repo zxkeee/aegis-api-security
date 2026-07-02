@@ -37,6 +37,14 @@ func (h *handlers) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	html := strings.ReplaceAll(string(data), "<script>", `<script nonce="`+nonce+`">`)
 	html = strings.ReplaceAll(html, "<style>", `<style nonce="`+nonce+`">`)
 
+	// Tell the login screen whether SSO is available, so it can reveal the
+	// "Sign in with SSO" button. "1" enabled, "0" off.
+	ssoFlag := "0"
+	if h.oidcEnabled() {
+		ssoFlag = "1"
+	}
+	html = strings.ReplaceAll(html, "__SSO_ENABLED__", ssoFlag)
+
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/html; charset=utf-8")
 	hdr.Set("Cache-Control", "no-store")

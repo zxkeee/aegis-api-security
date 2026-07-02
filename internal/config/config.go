@@ -53,6 +53,12 @@ type GatewayConfig struct {
 	// console works over plain HTTP in local development. Never enable in
 	// production: the session cookie would be sent over unencrypted connections.
 	AdminCookieInsecure bool `yaml:"admin_cookie_insecure"`
+	// AdminCORS is the CORS policy for the admin plane. The console is normally
+	// same-origin (served by the admin server itself), so this stays unset and
+	// the admin plane inherits security.cors. Set it when the console origins
+	// differ from the data-plane API origins — sharing one list would otherwise
+	// let every customer web-app origin make credentialed admin-API requests.
+	AdminCORS *CORSConfig `yaml:"admin_cors"`
 	// RequireTLS makes startup fail unless TLS is terminated at the gateway
 	// (tls.enabled). Set it in production. Leave false only when TLS is terminated
 	// by a trusted upstream (ingress / load balancer) in front of AEGIS.
@@ -68,6 +74,51 @@ type GatewayConfig struct {
 	Alerting       AlertingConfig     `yaml:"alerting"`
 	Multitenancy   MultitenancyConfig `yaml:"multitenancy"`
 	Discovery      DiscoveryConfig    `yaml:"discovery"`
+	// OIDC enables single sign-on for the admin console via an external identity
+	// provider (Okta, Auth0, Keycloak, Google, Azure AD, …). Independent of
+	// security.auth, which governs data-plane JWT validation for proxied traffic.
+	OIDC OIDCConfig `yaml:"oidc"`
+}
+
+// OIDCConfig configures OpenID Connect single sign-on for the admin console.
+// The gateway runs the Authorization Code flow with PKCE against the provider's
+// discovery document (<issuer>/.well-known/openid-configuration), validates the
+// returned ID token, maps its claims to a tenant + role, and just-in-time
+// provisions the operator as a console user. Secrets come from the environment
+// (AEGIS_OIDC_CLIENT_ID, AEGIS_OIDC_CLIENT_SECRET), never this file.
+type OIDCConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Issuer is the provider base URL; its discovery document is fetched at
+	// startup. Must be HTTPS.
+	Issuer string `yaml:"issuer"`
+	// ClientID / ClientSecret identify this gateway to the provider. Set via
+	// AEGIS_OIDC_CLIENT_ID / AEGIS_OIDC_CLIENT_SECRET.
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	// RedirectURL is this gateway's callback, registered with the provider. It
+	// must resolve to GET /api/auth/oidc/callback on the admin plane, e.g.
+	// "https://console.example.com/api/auth/oidc/callback".
+	RedirectURL string `yaml:"redirect_url"`
+	// Scopes requested from the provider. "openid" is always added. Include the
+	// scope that carries group/role membership (often "groups").
+	Scopes []string `yaml:"scopes"`
+	// TenantClaim is the ID-token claim carrying the operator's tenant. Empty =>
+	// every SSO user lands in DefaultTenant (single-tenant deployments).
+	TenantClaim string `yaml:"tenant_claim"`
+	// RolesClaim is the claim carrying role/group membership (string or []string).
+	// Default "groups".
+	RolesClaim string `yaml:"roles_claim"`
+	// AdminRoles / SuperAdminRoles list the claim values that grant the admin and
+	// super-admin roles. A user matching neither is provisioned as a read-only
+	// viewer — unless RequireMappedRole is set, in which case they are rejected.
+	AdminRoles      []string `yaml:"admin_roles"`
+	SuperAdminRoles []string `yaml:"super_admin_roles"`
+	// RequireMappedRole rejects a successfully-authenticated user who matches no
+	// admin/super-admin role instead of granting viewer. Use it when console
+	// access must be explicitly granted via an IdP group.
+	RequireMappedRole bool `yaml:"require_mapped_role"`
+	// AllowedDomains, when non-empty, restricts SSO to these email domains.
+	AllowedDomains []string `yaml:"allowed_domains"`
 }
 
 // DiscoveryConfig tunes passive API discovery. The catalog itself is enabled by
@@ -426,6 +477,12 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	if v := os.Getenv("AEGIS_FORENSIC_DSN"); v != "" {
 		cfg.ForensicDSN = v
 	}
+	if v := os.Getenv("AEGIS_OIDC_CLIENT_ID"); v != "" {
+		cfg.OIDC.ClientID = v
+	}
+	if v := os.Getenv("AEGIS_OIDC_CLIENT_SECRET"); v != "" {
+		cfg.OIDC.ClientSecret = v
+	}
 	if v := os.Getenv("AEGIS_ALERT_WEBHOOK_URL"); v != "" {
 		cfg.Alerting.WebhookURL = v
 	}
@@ -460,6 +517,75 @@ func Validate(cfg GatewayConfig) error {
 	}
 	if err := validateMultitenancy(cfg); err != nil {
 		return err
+	}
+	if err := validateRoutes(cfg); err != nil {
+		return err
+	}
+	if err := validateOIDC(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateOIDC checks the console SSO configuration. SSO layers on top of the
+// existing session machinery, so it needs admin_auth on (to have sessions at
+// all) and forensic_dsn set (the iam store where SSO users are provisioned).
+func validateOIDC(cfg GatewayConfig) error {
+	o := cfg.OIDC
+	if !o.Enabled {
+		return nil
+	}
+	if !cfg.AdminAuth {
+		return errors.New("oidc.enabled requires admin_auth: true (SSO establishes a console session)")
+	}
+	if cfg.ForensicDSN == "" {
+		return errors.New("oidc.enabled requires forensic_dsn (SSO just-in-time provisions users in the iam store)")
+	}
+	// Issuer must be HTTPS in production. Allow http only under the explicit
+	// local-dev flag (same affordance as redirect_url below), so a developer can
+	// point at a local IdP without weakening the production default.
+	issuerHTTPSDev := cfg.AdminCookieInsecure && strings.HasPrefix(o.Issuer, "http://")
+	if !strings.HasPrefix(o.Issuer, "https://") && !issuerHTTPSDev {
+		return fmt.Errorf("oidc.issuer must be an https URL, got %q", o.Issuer)
+	}
+	if o.ClientID == "" {
+		return errors.New("oidc.enabled but client_id is empty; set AEGIS_OIDC_CLIENT_ID")
+	}
+	if o.ClientSecret == "" {
+		return errors.New("oidc.enabled but client_secret is empty; set AEGIS_OIDC_CLIENT_SECRET")
+	}
+	// The redirect must be the callback on the admin plane and — since the ID
+	// token and session cookie travel over it — HTTPS, unless the operator has
+	// explicitly opted into insecure cookies for local development.
+	if o.RedirectURL == "" {
+		return errors.New("oidc.enabled but redirect_url is empty (e.g. https://console.example.com/api/auth/oidc/callback)")
+	}
+	if !strings.HasPrefix(o.RedirectURL, "https://") && !cfg.AdminCookieInsecure {
+		return fmt.Errorf("oidc.redirect_url must be https (got %q); set admin_cookie_insecure: true only for local dev", o.RedirectURL)
+	}
+	if !strings.HasSuffix(o.RedirectURL, "/api/auth/oidc/callback") {
+		return fmt.Errorf("oidc.redirect_url must end with /api/auth/oidc/callback, got %q", o.RedirectURL)
+	}
+	return nil
+}
+
+// validateRoutes rejects route options that would otherwise degrade silently.
+// In particular an unknown load_balance strategy used to fall back to
+// round-robin without any signal — an operator asking for "least_conn" got
+// different behaviour than configured.
+func validateRoutes(cfg GatewayConfig) error {
+	for _, r := range cfg.Routes {
+		switch r.LoadBalance {
+		case "", "round_robin":
+		default:
+			return fmt.Errorf("route %q: unsupported load_balance %q (supported: round_robin)",
+				r.Path, r.LoadBalance)
+		}
+		if r.Timeout != "" {
+			if _, err := time.ParseDuration(r.Timeout); err != nil {
+				return fmt.Errorf("route %q: invalid timeout %q: %w", r.Path, r.Timeout, err)
+			}
+		}
 	}
 	return nil
 }
@@ -615,6 +741,14 @@ func validateTLS(cfg GatewayConfig) error {
 }
 
 func validateCORS(cfg GatewayConfig) error {
+	// The admin plane authenticates with cookies, so a wildcard there is unsafe
+	// regardless of the JWT setting. Checked before the data-plane early return:
+	// admin_cors is independent of security.cors.enabled.
+	if ac := cfg.AdminCORS; ac != nil && ac.Enabled && cfg.AdminAuth &&
+		len(ac.AllowOrigins) == 1 && ac.AllowOrigins[0] == "*" {
+		return errors.New("admin_cors.allow_origins: [\"*\"] is incompatible with admin_auth; " +
+			"list explicit console origins in admin_cors.allow_origins")
+	}
 	if !cfg.Security.CORS.Enabled {
 		return nil
 	}

@@ -477,6 +477,31 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	return s.client.Del(ctx, prefixSession+token).Err()
 }
 
+// prefixLoginFlow stores the one-time OIDC login flow (state→nonce+PKCE
+// verifier) between the redirect to the IdP and the callback. Like sessions it
+// is NOT tenant-scoped: the flow happens pre-authentication, before any tenant
+// is known, and the random state token is globally unique.
+const prefixLoginFlow = "gw:oidc:flow:"
+
+// PutLoginFlow persists an OIDC login flow keyed by its state token, with a TTL.
+func (s *Store) PutLoginFlow(ctx context.Context, state, payload string, ttl time.Duration) error {
+	return s.client.Set(ctx, prefixLoginFlow+state, payload, ttl).Err()
+}
+
+// TakeLoginFlow atomically fetches AND deletes the flow for a state token
+// (GETDEL), so a given state can be redeemed exactly once — a replayed callback
+// finds nothing. Returns ("", false, nil) when the state is unknown/expired.
+func (s *Store) TakeLoginFlow(ctx context.Context, state string) (string, bool, error) {
+	v, err := s.client.GetDel(ctx, prefixLoginFlow+state).Result()
+	if err == redis.Nil {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
 // ── Abuse Detection (BOLA enumeration) ──────────────────────────────────────────
 
 // TrackObjectAccess records that a consumer accessed a specific object ID on an

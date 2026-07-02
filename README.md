@@ -253,8 +253,11 @@ A request to the data plane proceeds as follows:
    limiter returning `429`). If it does, the response travels back up the chain
    and is returned to the client without reaching the backend.
 4. If the request survives the chain, the reverse proxy selects an upstream via
-   the configured load-balancing strategy, applies a per-attempt timeout, and
-   forwards the request, adding signed identity headers.
+   the configured load-balancing strategy and forwards the request, adding
+   signed identity headers. The per-route `timeout` bounds how long the upstream
+   may take to return response *headers*; the proxy never buffers response
+   bodies (SSE, WebSocket upgrades and large downloads stream through), and
+   body transfer time is bounded by the server write timeout.
 5. The upstream response travels back up the chain. The DLP middleware inspects
    and, if necessary, redacts the body before it leaves the gateway.
 6. The discovery middleware records an observation (method, normalized path,
@@ -397,7 +400,11 @@ WebSocket upgrades proxied through the gateway continue to function).
 AEGIS watches its configuration file with `fsnotify` (falling back to 5-second
 polling if file-system notifications are unavailable). On a change:
 
-1. The new file is parsed.
+1. The new file is parsed and passed through the same safety validation as
+   startup (`config.Validate`); an edit that would be rejected at boot is
+   rejected here too, and the previous configuration stays active. The
+   `trusted_proxies` list is re-parsed as part of this step, so proxy changes
+   take effect without a restart.
 2. A new middleware chain is built from it.
 3. The posture engine is rebuilt so newly observed traffic is classified against
    the new policy.
@@ -406,14 +413,17 @@ polling if file-system notifications are unavailable). On a change:
 Because the swap is atomic and in-flight requests continue to use the handler
 they started with, configuration changes — including routing changes and
 security-policy changes — apply without dropping connections and without a
-restart. If the new configuration fails to parse or the chain fails to build, the
-previous configuration remains active and the error is logged.
+restart. If the new configuration fails to parse or validate, or the chain fails
+to build, the previous configuration remains active and the error is logged.
+Note that only the data plane is swapped: admin-plane settings (`admin_listen`,
+`admin_auth`/`admin_secret`, `admin_cors`, session TTL) are applied once at
+startup and require a restart to change.
 
 ### 4.8 Failure Modes and Degradation
 
 | Dependency / condition | Behaviour |
 |---|---|
-| Redis unavailable (rate limiter) | Fails open: the request proceeds. This favours availability; for high-assurance deployments a fail-closed mode is on the roadmap. |
+| Redis unavailable (rate limiter) | Fails open by default (the request proceeds). Set `rate_limit.fail_closed: true` to deny instead — recommended for high-assurance deployments. |
 | Redis unavailable (IP guard dynamic list) | The dynamic check is skipped and logged; static lists still apply. |
 | Redis unavailable (behavioural scoring) | Score resolves to zero and a metric is incremented; traffic is not blocked on a scoring gap. |
 | JWKS not yet loaded or permanently unreachable | Fails **closed**: tokens are rejected until keys are available. The gateway never silently falls back to HMAC when a JWKS URL is configured, which would otherwise allow token forgery. |
@@ -668,9 +678,11 @@ data.
 against a configurable blocklist, tracks fingerprint consistency per IP (a single
 IP presenting many distinct fingerprints is suspicious and raises the behavioural
 score), and penalises requests with no User-Agent. Because JA3 is consumed from a
-header, it is intended for deployments where an upstream TLS-terminating layer
-computes and injects the fingerprint; native TLS fingerprinting is on the
-roadmap.
+header when `bot.trust_upstream_ja3` is enabled (and only from a
+`trusted_proxies` peer). When the gateway terminates TLS itself, a native
+JA3-style fingerprint is computed from the ClientHello (`internal/tlsfp`) and
+injected by the `TLSFingerprint` middleware; any client-supplied fingerprint
+header is always stripped.
 
 ### 6.7 Behavioural Scoring and Auto-Ban
 
@@ -686,10 +698,13 @@ unavailable, so a scoring outage never blocks all traffic.
 ### 6.8 Active Challenge
 
 `Challenge` can interpose a lightweight JavaScript challenge for suspicious
-clients. A client that has not solved the challenge receives an HTML page that
-issues a token-bearing request; on success the client is marked solved for a
-configurable TTL and proceeds normally. This filters trivial scripted clients
-that do not execute JavaScript.
+clients. The challenge page embeds a random seed; the client must execute the
+page's JavaScript (or reimplement its FNV-1a transform) to derive the answer
+token — merely scraping the seed out of the HTML and echoing it back does not
+pass. On success the client is marked solved for a configurable TTL and
+proceeds normally. Be honest about the guarantee: this filters trivial scripted
+clients, not headless browsers or a determined attacker who reimplements the
+transform; treat it as one heuristic among the bot/behaviour controls.
 
 ### 6.9 Header Hygiene and Identity Propagation
 
@@ -749,6 +764,8 @@ CIDR.
 | `admin_listen` | string | Admin-plane listen address (default `:8081`) |
 | `admin_auth` | bool | Enable admin bearer-token authentication |
 | `admin_secret` | string | Admin bearer token (set via `AEGIS_ADMIN_SECRET`) |
+| `admin_cors` | object | Optional CORS policy for the admin plane; when unset the admin plane inherits `security.cors`. A wildcard origin is rejected when `admin_auth` is on |
+| `oidc` | object | Optional OpenID Connect single sign-on for the admin console (see [10.5](#105-identity-provider-integration)). Requires `admin_auth` and `forensic_dsn` |
 | `forensic_dsn` | string | PostgreSQL DSN; enables durable forensics and the discovery catalog (set via `AEGIS_FORENSIC_DSN`) |
 | `trusted_proxies` | list | Exact IPs/CIDRs of trusted reverse proxies for client-IP resolution |
 | `tls` | object | TLS termination at the gateway (`enabled`, `cert_file`, `key_file`) |
@@ -878,6 +895,12 @@ A security gateway is a high-value target and must be hardened.
 - **Defence in depth on mutating admin operations.** Endpoints that change state
   re-check authentication inside the handler, independent of the middleware, so a
   future routing mistake cannot expose them.
+- **Console single sign-on (OIDC).** Instead of sharing the bearer secret,
+  operators can sign in through your identity provider. AEGIS runs the
+  Authorization Code flow with PKCE, verifies the ID token against the provider
+  JWKS (issuer, audience, expiry, nonce), maps a group/role claim to the AEGIS
+  `admin`/`viewer`/super-admin model, and just-in-time provisions the user. See
+  [Section 10.5](#105-identity-provider-integration).
 - **Transport security.** Terminate TLS at the gateway (`tls` block) or at an
   upstream load balancer. The gateway emits HSTS and related security headers on
   every response.
@@ -1039,9 +1062,10 @@ consistent across the fleet.
 
 - Run multiple data-plane replicas behind a health-checked load balancer; use the
   `/readyz` probe so unhealthy instances are removed from rotation.
-- Use a highly available Redis (replication or cluster). Note that the rate
-  limiter currently fails open on Redis unavailability; for high-assurance
-  deployments, ensure Redis HA and track the fail-closed mode on the roadmap.
+- Use a highly available Redis (replication or cluster; Sentinel is supported
+  via `redis.sentinel`). The rate limiter and IP guard fail open by default on
+  Redis unavailability; set their `fail_closed: true` for high-assurance
+  deployments (see `docs/runbooks/ha.md` for the per-control matrix).
 - Use a managed or replicated PostgreSQL. Forensics and the catalog tolerate
   brief database outages (the forensic sink buffers and the catalog drops on
   back-pressure) without affecting the data plane.
@@ -1066,6 +1090,56 @@ AEGIS fetches and caches the provider's keys and validates RSA/ECDSA signatures,
 issuer and audience. To revoke a specific token immediately, post its `jti` to the
 admin revocation endpoint; AEGIS rejects it until the supplied TTL expires. Place
 health checks and genuinely public endpoints in `auth.exclude`.
+
+The section above governs **data-plane** JWT validation for proxied API traffic.
+The **admin console** has its own single sign-on, configured separately under the
+top-level `oidc` block.
+
+#### Console single sign-on (OIDC)
+
+Operators can sign in to the console through your identity provider instead of
+sharing the bearer secret. AEGIS implements the **Authorization Code flow with
+PKCE**:
+
+1. `GET /api/auth/oidc/login` mints a one-time `state`, `nonce` and PKCE
+   verifier (persisted server-side in Redis, single-use) and redirects to the
+   provider.
+2. The provider authenticates the operator (including any MFA it enforces) and
+   redirects back to `GET /api/auth/oidc/callback`.
+3. AEGIS validates `state` against the stored flow (consumed atomically via
+   `GETDEL`, so a replayed callback fails), exchanges the code for tokens using
+   the PKCE verifier, and verifies the **ID token** against the provider JWKS —
+   signature, issuer, audience, expiry, and `nonce`.
+4. It maps the ID-token claims to AEGIS's model: a configurable group/role claim
+   selects `admin`, `viewer`, or super-admin; an optional claim selects the
+   tenant. The operator is **just-in-time provisioned** as a console user (with a
+   non-password sentinel hash, so an SSO account can never be used with password
+   login), and the same server-side session + CSRF cookie password login issues
+   is established.
+
+```yaml
+oidc:
+  enabled: true
+  issuer: "https://your-tenant.okta.com"     # discovery doc fetched at startup (HTTPS)
+  client_id: ""                              # via AEGIS_OIDC_CLIENT_ID
+  client_secret: ""                          # via AEGIS_OIDC_CLIENT_SECRET
+  redirect_url: "https://console.example.com/api/auth/oidc/callback"
+  scopes: ["email", "profile", "groups"]     # "openid" is always added
+  roles_claim: "groups"
+  admin_roles: ["aegis-admins"]
+  super_admin_roles: ["aegis-superadmins"]
+  require_mapped_role: false                 # true = reject users in no admin group (else viewer)
+  tenant_claim: ""                           # optional; empty => default tenant
+  allowed_domains: []                        # optional email-domain allowlist
+```
+
+Client credentials come from the environment (`AEGIS_OIDC_CLIENT_ID`,
+`AEGIS_OIDC_CLIENT_SECRET`), never the config file. SSO requires `admin_auth`
+and `forensic_dsn` (users are provisioned in the iam store); startup validation
+enforces this and that `redirect_url` is HTTPS and ends in the callback path.
+Compatible with Okta, Auth0, Keycloak, Google, Azure AD and any standards
+-compliant OIDC provider. SAML, SCIM auto-provisioning and gateway-enforced MFA
+remain on the roadmap; most providers enforce MFA on their side during step 2.
 
 ### 10.6 Backend Trust and Signature Verification
 
@@ -1094,8 +1168,10 @@ block events with the reason and offending IP. Ship these logs to your central
 logging system. Security block events are also written to PostgreSQL
 (`forensic_logs`), which can be queried directly or exported to a SIEM. Operational
 counters are available as JSON through the admin API and can be scraped or
-forwarded into your metrics stack; native Prometheus exposition and first-class
-SIEM connectors are on the roadmap.
+forwarded into your metrics stack; native Prometheus exposition is available at
+`GET /metrics` on the admin plane (text format 0.0.4, behind the admin bearer).
+First-class SIEM connectors are on the roadmap; the `alerting` config block
+already delivers webhook alerts (generic/Slack formats).
 
 ---
 
@@ -1200,9 +1276,9 @@ echoed for cross-system correlation.
 
 **Metrics.** Monotonic counters in Redis, surfaced as JSON via
 `GET /api/metrics`. These include total requests passing the WAF, blocks per
-control, DLP redactions, bot detections and discovery counters. The Compose stack
-ships Prometheus and Grafana for infrastructure metrics; native Prometheus
-exposition of the AEGIS counters is on the roadmap.
+control, DLP redactions, bot detections and discovery counters, and natively in
+Prometheus text format via `GET /metrics` on the admin plane. The Compose stack
+ships Prometheus and Grafana; a scrape config is included in `prometheus.yml`.
 
 **Forensics.** Every block is written to a bounded Redis ring buffer for
 real-time display and, when PostgreSQL is configured, to the durable
@@ -1296,7 +1372,7 @@ roadmap priority.
 | Legitimate traffic is rate-limited as one client | Same as above — client IP resolves to the proxy | Configure `trusted_proxies` |
 | Tokens rejected even though they are valid | JWKS not reachable; AEGIS fails closed | Verify `jwks_url`; check egress to the IdP; review logs |
 | Catalog is empty | `forensic_dsn` not set, or only 404/blocked traffic seen | Set `AEGIS_FORENSIC_DSN`; confirm requests reach valid routes |
-| WebSocket/SSE endpoints break | A middleware buffering the response | DLP supports streaming and upgrades; ensure the route reaches the proxy and check for an upstream issue |
+| WebSocket/SSE endpoints break | A middleware buffering the response | The proxy and DLP both support streaming (Flusher) and upgrades (Hijacker) end-to-end — covered by `TestProxy_SSEStreamsThroughRetryPath` / `TestProxy_WebSocketUpgradePassesThrough`. Check for an upstream issue, and remember long-lived SSE is bounded by the server write timeout (30s) |
 | CI Lint/Security fail with a Go version error | Tooling Go older than the module's `go` directive | The workflows install tools via `go install` under the project toolchain to avoid this |
 
 ---

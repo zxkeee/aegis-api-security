@@ -33,6 +33,9 @@ type handlers struct {
 	specCat specOps
 	users   *iam.Store   // optional: nil when forensic_dsn is unset
 	audit   *audit.Store // optional: nil when forensic_dsn is unset
+	// oidc is the SSO authenticator; nil when oidc is disabled or discovery
+	// failed at startup. Behind an interface so the callback flow is testable.
+	oidc OIDCAuthenticator
 }
 
 // requireAuth is a defence-in-depth check called directly inside mutating

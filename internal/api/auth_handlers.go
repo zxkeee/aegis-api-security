@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -138,18 +139,8 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionTok, err := randToken()
+	csrf, err := h.establishSession(r.Context(), w, sess)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create session")
-		return
-	}
-	csrf, err := randToken()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create session")
-		return
-	}
-	sess.CSRF = csrf
-	if err := h.store.CreateSession(r.Context(), sessionTok, sess, h.cfg.AdminSessionTTL); err != nil {
 		h.log.Error("admin: create session failed", map[string]any{"error": err.Error()})
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
@@ -159,6 +150,37 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		Role: string(sess.Role), SuperAdmin: sess.SuperAdmin, Action: "login",
 		Method: r.Method, Path: r.URL.Path, Status: http.StatusOK, IP: ip,
 	})
+	h.log.Info("admin_login", map[string]any{
+		"ip":     middleware.RealIP(r),
+		"tenant": sess.TenantID,
+		"role":   string(sess.Role),
+		"user":   sess.UserID,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"csrf":   csrf,
+		"auth":   true,
+		"tenant": sess.TenantID,
+		"role":   string(sess.Role),
+	})
+}
+
+// establishSession mints the session + CSRF tokens, persists the server-side
+// session, and sets the two cookies. Shared by password login (which returns
+// the CSRF in a JSON body) and the OIDC callback (which redirects). Returns the
+// CSRF token so the caller can surface it. sess.CSRF is populated here.
+func (h *handlers) establishSession(ctx context.Context, w http.ResponseWriter, sess iam.Session) (string, error) {
+	sessionTok, err := randToken()
+	if err != nil {
+		return "", err
+	}
+	csrf, err := randToken()
+	if err != nil {
+		return "", err
+	}
+	sess.CSRF = csrf
+	if err := h.store.CreateSession(ctx, sessionTok, sess, h.cfg.AdminSessionTTL); err != nil {
+		return "", err
+	}
 
 	secure := !h.cfg.AdminCookieInsecure
 	maxAge := int(h.cfg.AdminSessionTTL / time.Second)
@@ -185,18 +207,7 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   maxAge,
 	})
-	h.log.Info("admin_login", map[string]any{
-		"ip":     middleware.RealIP(r),
-		"tenant": sess.TenantID,
-		"role":   string(sess.Role),
-		"user":   sess.UserID,
-	})
-	writeJSON(w, http.StatusOK, map[string]any{
-		"csrf":   csrf,
-		"auth":   true,
-		"tenant": sess.TenantID,
-		"role":   string(sess.Role),
-	})
+	return csrf, nil
 }
 
 // logout invalidates the current session and clears the cookie.

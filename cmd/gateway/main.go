@@ -21,6 +21,7 @@ import (
 	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
+	"api-gateway/internal/sso"
 	"api-gateway/internal/store"
 	"api-gateway/internal/tlsfp"
 
@@ -39,17 +40,9 @@ func main() {
 	flag.Parse()
 
 	// ── Load Configuration ────────────────────────────────────────────────────
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := loadValidatedConfig(*cfgPath)
 	if err != nil {
-		panic("failed to load config: " + err.Error())
-	}
-	if err := config.Validate(cfg); err != nil {
 		panic("unsafe configuration: " + err.Error())
-	}
-
-	// Pre-parse trusted proxy CIDRs once so RealIP() never does it per-request.
-	if err := middleware.InitTrustedProxies(cfg.TrustedProxies); err != nil {
-		panic("invalid trusted_proxies config: " + err.Error())
 	}
 
 	// ── Logger ────────────────────────────────────────────────────────────────
@@ -160,6 +153,22 @@ func main() {
 		}
 	}
 
+	// ── OIDC single sign-on (admin console) ───────────────────────────────────
+	// Discovery is a network call; bound it and fail startup loudly if SSO is
+	// configured but the provider is unreachable — a half-configured SSO is worse
+	// than an obvious boot failure. Requires the iam store (validated in config).
+	var ssoAuth *sso.Authenticator
+	if cfg.OIDC.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ssoAuth, err = sso.New(ctx, cfg.OIDC)
+		cancel()
+		if err != nil {
+			log.Error("failed to initialise OIDC SSO", map[string]any{"error": err.Error(), "issuer": cfg.OIDC.Issuer})
+			os.Exit(1)
+		}
+		log.Info("OIDC SSO enabled", map[string]any{"issuer": cfg.OIDC.Issuer})
+	}
+
 	// ── Build Handler Chain ───────────────────────────────────────────────────
 	var activeHandler atomic.Value
 	handler, gw, err := gateway.BuildHandlerChain(cfg, log, st, catalog, postureEng)
@@ -197,7 +206,13 @@ func main() {
 	if auditStore != nil {
 		auditRec = auditStore
 	}
-	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore)
+	// Pass a nil interface (not a typed-nil *sso.Authenticator) when SSO is off,
+	// so the handlers' oidc != nil check works correctly.
+	var ssoIface api.OIDCAuthenticator
+	if ssoAuth != nil {
+		ssoIface = ssoAuth
+	}
+	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore, ssoIface)
 
 	// FIX SEC: Protect admin API against brute force and DDoS
 	adminRateLimit := config.RateLimitConfig{
@@ -227,6 +242,13 @@ func main() {
 			"Set AEGIS_PROPAGATION_SECRET to a strong random value", nil)
 	}
 
+	// The admin plane gets its own CORS policy when admin_cors is set; otherwise
+	// it inherits security.cors (legacy behaviour). The console is same-origin,
+	// so most deployments never need to set either for the admin plane.
+	adminCORS := cfg.Security.CORS
+	if cfg.AdminCORS != nil {
+		adminCORS = *cfg.AdminCORS
+	}
 	adminHandler := middleware.Chain(adminSrv,
 		middleware.RequestID(),       // outermost: stamp every request before anything else
 		middleware.SecurityHeaders(), // must wrap AdminAuth so 401/403 responses carry CSP/HSTS
@@ -235,7 +257,7 @@ func main() {
 		// brute-force / DDoS traffic — exactly what this limit is meant to absorb.
 		middleware.RateLimit(adminRateLimit, "admin", log, st),
 		middleware.AdminAuth(cfg, log, st, auditRec),
-		middleware.CORS(cfg.Security.CORS),
+		middleware.CORS(adminCORS),
 	)
 	adminServer := &http.Server{
 		Addr:              cfg.AdminListen,
@@ -293,6 +315,27 @@ func main() {
 	log.Info("AEGIS gateway stopped gracefully")
 }
 
+// loadValidatedConfig parses the config file and runs the SAME safety gate for
+// both startup and hot-reload: config.Validate (rejects insecure combinations
+// such as placeholder secrets, wildcard CORS with auth, non-HTTPS threat feeds)
+// and middleware.InitTrustedProxies (re-parses trusted_proxies so RealIP
+// resolution tracks the config). Hot-reload previously skipped both, which let
+// an unsafe edit go live and silently ignored trusted_proxies changes — the
+// setting every per-IP control depends on.
+func loadValidatedConfig(path string) (config.GatewayConfig, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return config.GatewayConfig{}, err
+	}
+	if err := config.Validate(cfg); err != nil {
+		return config.GatewayConfig{}, err
+	}
+	if err := middleware.InitTrustedProxies(cfg.TrustedProxies); err != nil {
+		return config.GatewayConfig{}, err
+	}
+	return cfg, nil
+}
+
 // loadConfigSpec loads the optional config-level OpenAPI spec (discovery.
 // spec_path) and installs it as the catalog's fallback for drift detection. A
 // missing path clears the fallback; a read/parse error is logged and leaves the
@@ -330,9 +373,12 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 	reload := func() {
 		log.Info("config change detected, hot-reloading...")
 
-		newCfg, err := config.Load(absPath)
+		// The full startup gate (parse + Validate + trusted-proxy re-init) also
+		// guards hot-reload: an edit that would be rejected at boot must not go
+		// live either. On any error the previous configuration stays active.
+		newCfg, err := loadValidatedConfig(absPath)
 		if err != nil {
-			log.Error("hot-reload: config parse error", map[string]any{"error": err.Error()})
+			log.Error("hot-reload: rejected, previous config stays active", map[string]any{"error": err.Error()})
 			return
 		}
 
@@ -354,7 +400,10 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		}
 
 		activeHandler.Store(newHandler)
-		log.Info("hot-reload: success", map[string]any{
+		// Only the data-plane chain is swapped. The admin server (admin_listen,
+		// admin_auth/secret, admin_cors, session TTL) is built once at startup —
+		// changes to those fields need a restart.
+		log.Info("hot-reload: success (data plane swapped; admin-plane settings need a restart)", map[string]any{
 			"routes": len(newCfg.Routes),
 		})
 	}

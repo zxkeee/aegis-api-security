@@ -79,8 +79,8 @@ func TestCircuitBreaker_HalfOpenProbeSuccessCloses(t *testing.T) {
 	cb := newCircuitBreaker(1, 10*time.Millisecond)
 	cb.recordFailure()
 	time.Sleep(20 * time.Millisecond)
-	_ = cb.isOpen()      // admit the probe
-	cb.recordSuccess()   // probe succeeds
+	_ = cb.isOpen()    // admit the probe
+	cb.recordSuccess() // probe succeeds
 	if cb.isOpen() {
 		t.Fatal("a successful probe must close the breaker for all callers")
 	}

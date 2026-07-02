@@ -94,3 +94,45 @@ func TestIAM_BootstrapRootIdempotent(t *testing.T) {
 		t.Fatalf("original root creds invalidated: %v", err)
 	}
 }
+
+func TestIAM_UpsertSSOUser(t *testing.T) {
+	s := freshIAM(t)
+	ctx := context.Background()
+
+	// First SSO login: provisions the user and the tenant (JIT).
+	u, err := s.UpsertSSOUser(ctx, "acme", "SSO@Acme.io", RoleViewer, false)
+	if err != nil {
+		t.Fatalf("UpsertSSOUser insert: %v", err)
+	}
+	if u.TenantID != "acme" || u.Role != RoleViewer || u.Email != "sso@acme.io" {
+		t.Fatalf("provisioned user wrong: %+v", u)
+	}
+
+	// The SSO account can NEVER be used with password login (sentinel hash).
+	if _, err := s.VerifyPassword(ctx, "acme", "sso@acme.io", ssoPasswordSentinel); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("SSO account accepted a password: %v", err)
+	}
+	if _, err := s.VerifyPassword(ctx, "acme", "sso@acme.io", "anything"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("SSO account accepted a password: %v", err)
+	}
+
+	// Returning login with elevated claims re-syncs role/super-admin in place
+	// (same row, no duplicate).
+	u2, err := s.UpsertSSOUser(ctx, "acme", "sso@acme.io", RoleAdmin, true)
+	if err != nil {
+		t.Fatalf("UpsertSSOUser update: %v", err)
+	}
+	if u2.ID != u.ID {
+		t.Fatalf("re-login created a new row: %s vs %s", u2.ID, u.ID)
+	}
+	if u2.Role != RoleAdmin || !u2.SuperAdmin {
+		t.Fatalf("role/super not re-synced: %+v", u2)
+	}
+	list, err := s.ListUsers(ctx, "acme")
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("want exactly one user after re-login, got %d", len(list))
+	}
+}

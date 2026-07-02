@@ -31,12 +31,44 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] Proxy retry only for idempotent requests; buffered attempt
 - [x] Signed identity propagation with timestamp + nonce
 - [x] `gosec` and `golangci-lint` run in CI on every commit
+- [x] Hot-reload runs the full startup safety gate: `config.Validate` +
+      `InitTrustedProxies` now apply on every reload (previously an unsafe edit
+      went live unvalidated, and `trusted_proxies` changes were silently
+      ignored — breaking every per-IP control). Trusted-proxy set is swapped
+      atomically (race-free with in-flight requests).
+- [x] Proxy no longer wraps upstreams in `http.TimeoutHandler` (which buffered
+      whole responses in memory — an OOM vector — and broke SSE/WebSocket).
+      The per-route timeout is now a response-header bound on the transport;
+      SSE flushes and WebSocket upgrades pass through end-to-end (covered by
+      `TestProxy_SSEStreamsThroughRetryPath` / `TestProxy_WebSocketUpgradePassesThrough`).
+- [x] JWKS initial fetch retries forever with capped backoff (a transient IdP
+      outage at boot used to leave the gateway permanently fail-closed after
+      5 attempts, 401-ing all traffic until restart).
+- [x] Challenge no longer embeds the expected token in the page: the server
+      stores an FNV-1a transform of the embedded seed, so scraping the HTML and
+      echoing the seed back does not pass (documented honestly as a
+      trivial-bot filter, not bot-proof).
+- [x] Unknown `load_balance` strategies and malformed route timeouts are
+      rejected by `config.Validate` instead of silently degrading to defaults.
+- [x] Optional `admin_cors` block: the admin plane no longer has to share the
+      data-plane CORS origin list; wildcard rejected when `admin_auth` is on.
+- [x] Client-supplied `X-Request-ID` is sanitised (charset + 64-char cap)
+      before being logged/echoed/forwarded; deprecated `X-XSS-Protection`
+      header dropped (CSP is the control).
 
 ### P0 — release blockers
 - [x] **Real console authentication.** Static bearer in `sessionStorage` replaced
       with server-side sessions in Redis: HttpOnly session cookie (unreadable by
       JS/XSS) + CSRF double-submit token on mutations, with TTL. Bearer kept for
-      API/CLI. (Full OIDC/SAML SSO + `admin`/`viewer` roles + MFA remain P1.)
+      API/CLI. `admin`/`viewer` roles enforced. **OIDC single sign-on** now
+      implemented (`internal/sso`): Authorization Code flow with PKCE against the
+      provider discovery document, ID-token verification (signature via the
+      provider JWKS, issuer/audience/expiry, nonce), claim→tenant/role mapping,
+      and just-in-time user provisioning. `GET /api/auth/oidc/login` +
+      `/callback`; validated end-to-end against a local IdP with real RS256
+      crypto (`internal/sso` integration tests) and a live-PG callback test.
+      (SAML + SCIM + MFA remain P1 — most enterprises front OIDC with their own
+      MFA, so this unblocks the majority of SSO deals.)
 - [x] **Dependency CVE scanning.** `govulncheck` runs in CI; x/net bumped and
       toolchain pinned (go1.26.4) so the module and stdlib are CVE-clean.
 - [~] **Independent security testing.** Automated dynamic scan in place
