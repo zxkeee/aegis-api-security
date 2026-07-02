@@ -2,9 +2,10 @@ package audit
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
+
+	"api-gateway/internal/pgtest"
 )
 
 type nopLogger struct{}
@@ -14,10 +15,7 @@ func (nopLogger) Error(string, ...map[string]any) {}
 
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	dsn := os.Getenv("POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("POSTGRES_DSN not set; skipping audit PostgreSQL integration test")
-	}
+	dsn := pgtest.DSN(t, "test_audit")
 	s, err := New(dsn, nopLogger{})
 	if err != nil {
 		t.Fatalf("New: %v", err)

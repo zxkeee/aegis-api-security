@@ -3,18 +3,17 @@ package iam
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
+
+	"api-gateway/internal/pgtest"
 )
 
-// pgDSN returns the test PostgreSQL DSN or skips when unset.
+// pgDSN returns a schema-isolated test PostgreSQL DSN (or skips when unset), so
+// this package's TRUNCATEs never collide with other packages under `go test
+// ./...`. See internal/pgtest.
 func pgDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("POSTGRES_DSN not set; skipping IAM integration test")
-	}
-	return dsn
+	return pgtest.DSN(t, "test_iam")
 }
 
 type nopLogger struct{}
