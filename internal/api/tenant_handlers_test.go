@@ -6,29 +6,28 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
+	"api-gateway/internal/pgtest"
 	"api-gateway/internal/tenant"
 )
 
-// pgDSN returns the integration-test DSN or skips. Mirrors the discovery/iam
-// pattern so a normal `go test ./...` stays green on a laptop without PG.
+// pgDSN returns a schema-isolated integration-test DSN (or skips when unset).
+// The dedicated "test_api" schema is created fresh per test, so this package's
+// tables never collide with other packages under a parallel `go test ./...`.
+// See internal/pgtest.
 func pgDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("POSTGRES_DSN not set; skipping tenant/user CRUD integration test")
-	}
-	return dsn
+	return pgtest.DSN(t, "test_api")
 }
 
-// freshHandlers wires a real iam.Store against the integration DB and returns
-// a *handlers ready for direct method calls. Tables are truncated so each test
-// starts from a clean slate.
+// freshHandlers wires a real iam.Store against the (freshly-created, empty)
+// integration schema and returns a *handlers ready for direct method calls. No
+// TRUNCATE is needed: pgtest.DSN gives each test a clean schema, and NewStore
+// creates the tables empty inside it.
 func freshHandlers(t *testing.T) *handlers {
 	t.Helper()
 	store, err := iam.NewStore(pgDSN(t), logger.New("error"))
@@ -36,17 +35,6 @@ func freshHandlers(t *testing.T) *handlers {
 		t.Fatalf("iam.NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	// Direct DB access through the package isn't exported, but we can rely on
-	// DeleteTenant cascading via admin_users to clear our test footprint.
-	// Simpler: issue raw SQL through the store's underlying handle.
-	for _, q := range []string{
-		`TRUNCATE admin_users`,
-		`TRUNCATE tenants`,
-	} {
-		if err := execRaw(t, pgDSN(t), q); err != nil {
-			t.Fatalf("truncate: %v", err)
-		}
-	}
 	// AdminAuth disabled in tests so requireAuth passes without a cookie/bearer —
 	// these tests exercise the RBAC policy layer (role + super-admin in ctx),
 	// independent of cookie/CSRF mechanics covered by middleware tests.
@@ -57,50 +45,6 @@ func freshHandlers(t *testing.T) *handlers {
 		cfg:   cfg,
 		users: store,
 	}
-}
-
-// execRaw opens a one-shot connection to run a TRUNCATE without piercing the
-// iam package's encapsulation. Tied to the same DSN so it operates on the same
-// database.
-func execRaw(t *testing.T, dsn, query string) error {
-	t.Helper()
-	s, err := iam.NewStore(dsn, logger.New("error"))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = s.Close() }()
-	// Round-trip via a no-op tenant insert/delete to confirm the store works,
-	// then use a query we know exists: CreateTenant is idempotent and won't
-	// taint state if the truncation already ran. We avoid the unexported field
-	// by piggy-backing on DeleteTenant of a definitely-nonexistent id.
-	_, err = s.DeleteTenant(context.Background(), "__truncate_marker__")
-	if err != nil {
-		return err
-	}
-	// Fall back to deleting all rows tenant-by-tenant for the smaller table set
-	// we touch.
-	if query == `TRUNCATE admin_users` {
-		us, err := s.ListUsers(context.Background(), "")
-		if err != nil {
-			return err
-		}
-		for _, u := range us {
-			if _, err := s.DeleteUser(context.Background(), u.ID); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	ts, err := s.ListTenants(context.Background())
-	if err != nil {
-		return err
-	}
-	for _, tn := range ts {
-		if _, err := s.DeleteTenant(context.Background(), tn.ID); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ctxAs returns a base context loaded with the tenant/role/super flags an

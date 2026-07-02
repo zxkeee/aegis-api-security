@@ -2,22 +2,18 @@ package discovery
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"api-gateway/internal/config"
+	"api-gateway/internal/pgtest"
 )
 
 // pgDSN returns the test PostgreSQL DSN or skips when unset (local runs without
 // a database). CI provides POSTGRES_DSN via the postgres service.
 func pgDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("POSTGRES_DSN not set; skipping PostgreSQL integration test")
-	}
-	return dsn
+	return pgtest.DSN(t, "test_discovery")
 }
 
 type nopLogger struct{}

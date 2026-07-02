@@ -46,6 +46,13 @@ go test ./internal/store/ ./internal/discovery/ -v
 `internal/store` (Redis) and `internal/discovery` (PostgreSQL catalog) have such
 tests; the discovery PG tests `TRUNCATE` the catalog tables for determinism.
 
+**PostgreSQL test isolation.** `go test ./...` runs packages in parallel against
+the one shared database, so a package that `TRUNCATE`s a table would wipe
+another package's rows mid-test. Every PG integration test gets its DSN from
+`pgtest.DSN(t, "<schema>")` (`internal/pgtest`), which routes that package into
+its own schema via `search_path` and drops/recreates it per run. New PG tests
+MUST use it (never read `POSTGRES_DSN` directly) and pick a unique schema name.
+
 ## Architecture
 
 ### Two servers, one process (`cmd/gateway/main.go`)

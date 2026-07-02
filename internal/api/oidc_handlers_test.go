@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -144,10 +143,7 @@ func TestOIDCCallback_StateIsSingleUse(t *testing.T) {
 // Full happy-path callback needs PostgreSQL (JIT user provisioning). Gated like
 // the other integration tests so the default `go test ./...` stays hermetic.
 func TestOIDCCallback_HappyPath_Integration(t *testing.T) {
-	dsn := os.Getenv("POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("set POSTGRES_DSN to run the SSO callback integration test")
-	}
+	dsn := pgDSN(t) // schema-isolated; skips when POSTGRES_DSN is unset
 	users, err := iam.NewStore(dsn, logger.New("error"))
 	if err != nil {
 		t.Fatalf("iam.NewStore: %v", err)
