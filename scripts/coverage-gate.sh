@@ -23,7 +23,7 @@ api-gateway/internal/iam 75
 api-gateway/internal/proxy 92
 api-gateway/internal/discovery 80
 api-gateway/internal/classify 90
-api-gateway/internal/api 60
+api-gateway/internal/api 70
 api-gateway/internal/store 80
 api-gateway/internal/audit 75
 api-gateway/internal/gateway 82
