@@ -21,6 +21,7 @@ import (
 	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
+	"api-gateway/internal/retention"
 	"api-gateway/internal/sso"
 	"api-gateway/internal/store"
 	"api-gateway/internal/tlsfp"
@@ -150,6 +151,27 @@ func main() {
 		} else {
 			defer func() { _ = auditStore.Close() }()
 			log.Info("admin audit log enabled", map[string]any{"backend": "postgresql"})
+		}
+	}
+
+	// ── Retention sweep (bounds durable-table growth) ─────────────────────────
+	// Needs PostgreSQL (the tables it prunes). Runs on a cancelable context tied
+	// to shutdown so the periodic sweep drains cleanly.
+	retentionCtx, stopRetention := context.WithCancel(context.Background())
+	defer stopRetention()
+	if cfg.Retention.Enabled && cfg.ForensicDSN != "" {
+		rw, rerr := retention.New(cfg.ForensicDSN, cfg.Retention, log)
+		if rerr != nil {
+			log.Error("retention init failed (sweep disabled)", map[string]any{"error": rerr.Error()})
+		} else {
+			defer func() { _ = rw.Close() }()
+			go rw.Run(retentionCtx)
+			log.Info("retention sweep enabled", map[string]any{
+				"interval":           cfg.Retention.Interval.String(),
+				"forensic_days":      cfg.Retention.ForensicDays,
+				"audit_days":         cfg.Retention.AuditDays,
+				"consumer_idle_days": cfg.Retention.ConsumerIdleDays,
+			})
 		}
 	}
 

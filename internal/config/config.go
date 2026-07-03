@@ -78,6 +78,29 @@ type GatewayConfig struct {
 	// provider (Okta, Auth0, Keycloak, Google, Azure AD, …). Independent of
 	// security.auth, which governs data-plane JWT validation for proxied traffic.
 	OIDC OIDCConfig `yaml:"oidc"`
+	// Retention bounds the growth of the PostgreSQL tables that would otherwise
+	// grow without limit (forensic logs, admin audit log, consumer graph).
+	Retention RetentionConfig `yaml:"retention"`
+}
+
+// RetentionConfig configures the background retention sweep that deletes aged
+// rows from the durable PostgreSQL tables. It targets the tables that grow
+// unbounded with traffic — forensic_logs, admin_audit_log, and the consumer
+// graph (api_consumers / api_endpoint_consumers). The endpoint catalog itself
+// (api_endpoints) is intentionally NOT pruned: it is bounded by path
+// normalisation and is the valuable inventory. A per-table window of 0 keeps
+// that table forever (sweep skips it).
+type RetentionConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Interval is how often the sweep runs. Default 24h when enabled.
+	Interval time.Duration `yaml:"interval"`
+	// ForensicDays deletes forensic_logs rows older than N days (0 = keep all).
+	ForensicDays int `yaml:"forensic_days"`
+	// AuditDays deletes admin_audit_log rows older than N days (0 = keep all).
+	AuditDays int `yaml:"audit_days"`
+	// ConsumerIdleDays deletes api_consumers / api_endpoint_consumers not seen in
+	// N days, then prunes orphaned edges (0 = keep all).
+	ConsumerIdleDays int `yaml:"consumer_idle_days"`
 }
 
 // OIDCConfig configures OpenID Connect single sign-on for the admin console.
@@ -449,6 +472,9 @@ func Load(path string) (GatewayConfig, error) {
 	if cfg.AdminSessionTTL == 0 {
 		cfg.AdminSessionTTL = 8 * time.Hour
 	}
+	if cfg.Retention.Enabled && cfg.Retention.Interval == 0 {
+		cfg.Retention.Interval = 24 * time.Hour
+	}
 	if cfg.Alerting.Format == "" {
 		cfg.Alerting.Format = "generic"
 	}
@@ -523,6 +549,30 @@ func Validate(cfg GatewayConfig) error {
 	}
 	if err := validateOIDC(cfg); err != nil {
 		return err
+	}
+	if err := validateRetention(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateRetention checks the retention sweep configuration. It needs a
+// database to act on, and at least one positive window (else the worker would
+// run and delete nothing — likely a misconfiguration the operator should see).
+func validateRetention(cfg GatewayConfig) error {
+	r := cfg.Retention
+	if !r.Enabled {
+		return nil
+	}
+	if cfg.ForensicDSN == "" {
+		return errors.New("retention.enabled requires forensic_dsn (the tables it prunes live in PostgreSQL)")
+	}
+	if r.ForensicDays < 0 || r.AuditDays < 0 || r.ConsumerIdleDays < 0 {
+		return errors.New("retention windows (forensic_days/audit_days/consumer_idle_days) must be >= 0")
+	}
+	if r.ForensicDays == 0 && r.AuditDays == 0 && r.ConsumerIdleDays == 0 {
+		return errors.New("retention.enabled but every window is 0; set at least one of " +
+			"forensic_days/audit_days/consumer_idle_days, or disable retention")
 	}
 	return nil
 }
