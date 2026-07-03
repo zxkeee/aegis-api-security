@@ -200,16 +200,16 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 ## Pillar 3 — Works excellently
 
 ### P0 — release blockers
-- [~] **Test coverage.** Regression tests added for every recent security fix
+- [x] **Test coverage.** Regression tests for every recent security fix
       (JA3 spoof, IP-guard/rate-limit fail-closed, identity signature/replay).
       A CI coverage gate (`scripts/coverage-gate.sh`, wired into `test.yml`)
-      enforces per-package floors that ratchet toward the >= 70% target.
-      Current: tenant 100%, tlsfp 100%, gatewayverify 93.4%, proxy 89%,
-      config 85.4%, alert 75.6%, middleware ~65%; with real Redis/PG
-      discovery is ~86% and store ~28% (the cross-tenant deny tests pass against
-      live databases — validated on the home-server containers, not just CI).
-      api 18.4% (pure helpers; handler integration tests still to add).
-      proxy/discovery/api were 26/23/11% before this pass.
+      enforces per-package floors that ratchet toward the >= 70% target — now met
+      on **every critical package**. Current (against the live Redis+PostgreSQL
+      stand): tenant/tlsfp 100%, classify 93%, gatewayverify 93%, proxy 92%,
+      config 90%, gateway 87%, sso 88%, store 85%, discovery 84%, iam 82%,
+      middleware 82%, retention 81%, audit 80%, **api 76%** (the catalog/posture
+      handlers are now exercised through a seeded live catalog, plus requireAuth
+      and the store error paths). The `api` floor was ratcheted 60→70.
 - [~] **Load and latency benchmarks.** k6 scripts + guide under `tests/load/`
       (single-tenant + multi-tenant + attack-mix scenarios, CI-able
       thresholds). First on-hardware run in `tests/load/results-2026-06-21.md`:
