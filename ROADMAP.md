@@ -58,7 +58,7 @@ API Security (Akamai / Salt / Noname). Оценка основана на фак
 | P1-3 | **Интеграции/алертинг** | Slack / PagerDuty / SIEM (Splunk, Elastic), настраиваемые вебхуки, экспорт событий. Сейчас webhook захардкожен пустым. |
 | P1-4 | **OpenAPI / spec drift** | Импорт спецификации; сравнение «задокументировано vs реально в трафике»; валидация схемы. |
 | P1-5 | **Модели развёртывания** | Out-of-band (зеркалирование трафика/tap) + интеграция с Kong/Apigee/AWS API GW. Сейчас только inline. |
-| P1-6 | **Retention / масштаб данных** | Политики хранения, rollup агрегатов, бэкапы. `api_consumers`/forensic растут без ограничений. |
+| P1-6 | **Retention / масштаб данных** 🟡 | Сделано: фоновый retention-sweep (`internal/retention`) — периодически удаляет строки старше настроенного окна из растущих без ограничений таблиц: `forensic_logs`, `admin_audit_log`, consumer-граф (`api_consumers`/`api_endpoint_consumers` + orphan-очистка). Каталог `api_endpoints` намеренно не трогается (ограничен нормализацией). Конфиг `retention` (interval + per-table `*_days`, 0 = хранить вечно); одна maintenance-транзакция с RLS escape-hatch `app.tenant_id='*'` чистит кросс-tenant; интеграционные тесты против живого PG + живой прогон бинаря (`forensic_deleted:1`). Осталось: rollup агрегатов (свёртка старого в суммарники вместо удаления), бэкапы/PITR (ops), батчинг больших DELETE. |
 | P1-7 | **HA / scale** | Бенчмарки латентности/RPS, описание кластеризации, отказоустойчивость PG. |
 
 ### 🟡 P2 — конкурентная дифференциация

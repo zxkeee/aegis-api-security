@@ -265,3 +265,16 @@ routes:
 #   require_mapped_role: false                     # true = reject users matching no admin group (else viewer)
 #   tenant_claim: ""                               # optional claim carrying the tenant id (empty => default)
 #   allowed_domains: []                            # optional email-domain allowlist
+
+# ── Data retention ───────────────────────────────────────────────────────────
+# Optional. Bounds the growth of the durable PostgreSQL tables that would
+# otherwise grow without limit: forensic_logs (one row per block), the admin
+# audit log, and the consumer graph (api_consumers / api_endpoint_consumers).
+# A background sweep deletes rows older than the per-table window. The endpoint
+# catalog (api_endpoints) is intentionally NOT pruned. Needs forensic_dsn.
+# retention:
+#   enabled: true
+#   interval: 24h              # how often the sweep runs (default 24h)
+#   forensic_days: 90          # delete forensic_logs older than N days (0 = keep all)
+#   audit_days: 365            # delete admin_audit_log older than N days (0 = keep all)
+#   consumer_idle_days: 90     # delete consumers/edges not seen in N days (0 = keep all)

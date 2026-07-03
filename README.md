@@ -369,6 +369,11 @@ following tables (created automatically on startup):
 - `api_endpoint_consumers` — the consumer-to-endpoint edge with a per-pair call
   count, forming the consumer graph used for analytics.
 
+The consumer graph and the forensic/audit tables grow with traffic; the optional
+`retention` sweep (see [Section 15](#15-operations-runbook)) bounds them by
+deleting rows past a configured age. The endpoint catalog is bounded by path
+normalisation and is never auto-pruned.
+
 ### 4.6 Concurrency and Performance Model
 
 AEGIS is built on Go's standard `net/http` server, which serves each request on
@@ -766,6 +771,7 @@ CIDR.
 | `admin_secret` | string | Admin bearer token (set via `AEGIS_ADMIN_SECRET`) |
 | `admin_cors` | object | Optional CORS policy for the admin plane; when unset the admin plane inherits `security.cors`. A wildcard origin is rejected when `admin_auth` is on |
 | `oidc` | object | Optional OpenID Connect single sign-on for the admin console (see [10.5](#105-identity-provider-integration)). Requires `admin_auth` and `forensic_dsn` |
+| `retention` | object | Optional background sweep that deletes aged rows from the durable PostgreSQL tables (forensic logs, audit log, consumer graph). Requires `forensic_dsn` |
 | `forensic_dsn` | string | PostgreSQL DSN; enables durable forensics and the discovery catalog (set via `AEGIS_FORENSIC_DSN`) |
 | `trusted_proxies` | list | Exact IPs/CIDRs of trusted reverse proxies for client-IP resolution |
 | `tls` | object | TLS termination at the gateway (`enabled`, `cert_file`, `key_file`) |
@@ -1340,6 +1346,29 @@ touched.
 **Respond to a posture regression.** If coverage drops or a new shadow endpoint
 appears, inspect it in the API Catalog, decide whether it should exist, and
 either add a protected route for it or remove the backend exposure.
+
+**Bound durable-storage growth.** The Redis state is self-bounding (TTLs, a
+capped forensic ring buffer), but the PostgreSQL tables grow with traffic:
+`forensic_logs`, `admin_audit_log`, and the consumer graph (`api_consumers`,
+`api_endpoint_consumers`). Enable the retention sweep to cap them:
+
+```yaml
+retention:
+  enabled: true
+  interval: 24h            # sweep cadence
+  forensic_days: 90        # delete forensic_logs older than N days (0 = keep all)
+  audit_days: 365          # delete admin_audit_log older than N days
+  consumer_idle_days: 90   # delete consumers/edges not seen in N days
+```
+
+A background worker deletes rows past the window on each tick, in a single
+maintenance transaction that spans every tenant (it sets the RLS
+`app.tenant_id='*'` escape value). The endpoint catalog (`api_endpoints`) is
+never pruned — it is the inventory and is bounded by path normalisation. Each
+sweep logs per-table delete counts. Retention needs `forensic_dsn`; a window of
+`0` keeps that table forever. For compliance-driven long retention, keep the
+windows high (or `0`) and rely on database backups; rollup of aged rows into
+summaries and delete-batching for very large tables are on the roadmap.
 
 ---
 

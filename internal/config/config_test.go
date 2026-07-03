@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // validBase returns a configuration that passes Validate, so individual tests
@@ -379,5 +380,68 @@ func TestApplyEnvOverrides_OIDCSecrets(t *testing.T) {
 	applyEnvOverrides(&c)
 	if c.OIDC.ClientID != "env-cid" || c.OIDC.ClientSecret != "env-secret" {
 		t.Fatalf("oidc secrets not overridden from env: %+v", c.OIDC)
+	}
+}
+
+func TestValidate_Retention(t *testing.T) {
+	base := func() GatewayConfig {
+		c := validBase()
+		c.ForensicDSN = "postgres://x/y"
+		c.Retention = RetentionConfig{Enabled: true, ForensicDays: 90}
+		return c
+	}
+	if err := Validate(base()); err != nil {
+		t.Fatalf("valid retention rejected: %v", err)
+	}
+	t.Run("requires forensic_dsn", func(t *testing.T) {
+		c := base()
+		c.ForensicDSN = ""
+		if err := Validate(c); err == nil || !strings.Contains(err.Error(), "forensic_dsn") {
+			t.Fatalf("retention without forensic_dsn must be rejected, got %v", err)
+		}
+	})
+	t.Run("all-zero windows rejected", func(t *testing.T) {
+		c := base()
+		c.Retention = RetentionConfig{Enabled: true}
+		if err := Validate(c); err == nil || !strings.Contains(err.Error(), "window") {
+			t.Fatalf("enabled with no window must be rejected, got %v", err)
+		}
+	})
+	t.Run("negative window rejected", func(t *testing.T) {
+		c := base()
+		c.Retention.AuditDays = -1
+		if err := Validate(c); err == nil {
+			t.Fatal("negative window must be rejected")
+		}
+	})
+	t.Run("disabled is a no-op", func(t *testing.T) {
+		c := validBase()
+		c.Retention = RetentionConfig{Enabled: false, ForensicDays: -5} // ignored when disabled
+		if err := Validate(c); err != nil {
+			t.Fatalf("disabled retention should not validate its fields: %v", err)
+		}
+	})
+}
+
+func TestLoad_RetentionIntervalDefault(t *testing.T) {
+	dir := t.TempDir()
+	p := dir + "/g.yaml"
+	if err := os.WriteFile(p, []byte(`
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+forensic_dsn: "postgres://x/y"
+redis: {password: "p"}
+retention:
+  enabled: true
+  forensic_days: 30
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Retention.Interval != 24*time.Hour {
+		t.Fatalf("interval default = %v, want 24h", c.Retention.Interval)
 	}
 }

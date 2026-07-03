@@ -182,6 +182,15 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [~] Anomaly detection / behavioural baselines per consumer. Done: per-consumer
       EWMA baseline for BOLA enumeration (`store.TrackBaseline`, A2). Remaining:
       volume/time/geo/error-rate profiles, sequence anomaly, peer-group.
+- [~] **Data retention.** Background sweep (`internal/retention`) deletes rows
+      older than a configured per-table window from the tables that grow
+      unbounded with traffic — `forensic_logs`, `admin_audit_log`, and the
+      consumer graph (`api_consumers` / `api_endpoint_consumers` + orphan
+      cleanup). The endpoint catalog is left intact (bounded by normalisation).
+      One maintenance transaction spans all tenants via the RLS `app.tenant_id='*'`
+      escape hatch. Config: `retention` (interval + `forensic_days` / `audit_days`
+      / `consumer_idle_days`; 0 keeps a table forever). Remaining: rollup of aged
+      rows into summaries, backups/PITR (ops), batching for very large deletes.
 - [ ] Out-of-band deployment (traffic mirroring) in addition to inline.
 - [ ] Compliance report templates (PCI-DSS, HIPAA, GDPR).
 - [ ] Licensing / metering.
