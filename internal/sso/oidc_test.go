@@ -154,3 +154,16 @@ func TestNormaliseScopes_AlwaysOpenIDOnce(t *testing.T) {
 		t.Fatalf("openid must appear exactly once, got %v", got)
 	}
 }
+
+func TestMapIdentity_EmailVerifiedStringFalseRejected(t *testing.T) {
+	a := auth(config.OIDCConfig{})
+	// A provider that sends email_verified as the string "false" must not slip
+	// through a bool-only type assertion.
+	if _, err := a.mapIdentity(map[string]any{"email": "u@x.com", "email_verified": "false"}); err == nil {
+		t.Fatal(`email_verified:"false" (string) must be rejected`)
+	}
+	// String "true" and absent are accepted.
+	if _, err := a.mapIdentity(map[string]any{"email": "u@x.com", "email_verified": "true"}); err != nil {
+		t.Fatalf(`email_verified:"true" (string) should pass: %v`, err)
+	}
+}

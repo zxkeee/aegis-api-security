@@ -312,6 +312,7 @@ func oidcBase() GatewayConfig {
 		ClientID:     "cid",
 		ClientSecret: "csecret",
 		RedirectURL:  "https://console.example.com/api/auth/oidc/callback",
+		AdminRoles:   []string{"aegis-admins"}, // an access restriction (now required)
 	}
 	return c
 }
@@ -443,5 +444,30 @@ retention:
 	}
 	if c.Retention.Interval != 24*time.Hour {
 		t.Fatalf("interval default = %v, want 24h", c.Retention.Interval)
+	}
+}
+
+func TestValidate_OIDCRequiresAccessRestriction(t *testing.T) {
+	c := oidcBase()
+	c.OIDC.AdminRoles = nil
+	c.OIDC.SuperAdminRoles = nil
+	c.OIDC.AllowedDomains = nil
+	c.OIDC.RequireMappedRole = false
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "access restriction") {
+		t.Fatalf("OIDC with no restriction must be rejected, got %v", err)
+	}
+	// Any single restriction satisfies it.
+	for _, set := range []func(*OIDCConfig){
+		func(o *OIDCConfig) { o.AdminRoles = []string{"a"} },
+		func(o *OIDCConfig) { o.SuperAdminRoles = []string{"s"} },
+		func(o *OIDCConfig) { o.AllowedDomains = []string{"example.com"} },
+		func(o *OIDCConfig) { o.RequireMappedRole = true },
+	} {
+		c := oidcBase()
+		c.OIDC.AdminRoles, c.OIDC.SuperAdminRoles, c.OIDC.AllowedDomains, c.OIDC.RequireMappedRole = nil, nil, nil, false
+		set(&c.OIDC)
+		if err := Validate(c); err != nil {
+			t.Fatalf("one restriction should satisfy validation: %v", err)
+		}
 	}
 }

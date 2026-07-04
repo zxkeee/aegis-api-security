@@ -79,6 +79,19 @@ func TestOIDCLogin_RedirectsAndPersistsFlow(t *testing.T) {
 	if !found {
 		t.Fatalf("login flow not persisted for state %q; keys=%v", state, keys)
 	}
+	// The browser-binding cookie must be set and carry the same state.
+	var binding *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == oidcStateCookie {
+			binding = c
+		}
+	}
+	if binding == nil || binding.Value != state {
+		t.Fatalf("login must set the %s cookie to the state; got %+v", oidcStateCookie, binding)
+	}
+	if binding.SameSite != http.SameSiteLaxMode || !binding.HttpOnly {
+		t.Fatalf("state cookie must be HttpOnly + SameSite=Lax; got %+v", binding)
+	}
 }
 
 func TestOIDCLogin_DisabledIs404(t *testing.T) {
@@ -129,6 +142,7 @@ func TestOIDCCallback_StateIsSingleUse(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?state="+flow.State+"&code=abc", nil)
+	r.AddCookie(&http.Cookie{Name: oidcStateCookie, Value: flow.State}) // browser binding
 	h.oidcCallback(rec, r)
 	if rec.Code != http.StatusFound { // exchange failed → redirect to error
 		t.Fatalf("want redirect after failed exchange, got %d", rec.Code)
@@ -138,6 +152,42 @@ func TestOIDCCallback_StateIsSingleUse(t *testing.T) {
 		t.Fatal("state was not consumed (GETDEL) on first callback")
 	}
 	_ = mr
+}
+
+// Login CSRF / session fixation: a callback whose state does not match the
+// browser's binding cookie (attacker-supplied state, victim's browser) must be
+// rejected BEFORE the flow is consumed or any exchange happens.
+func TestOIDCCallback_LoginCSRF_Rejected(t *testing.T) {
+	f := &fakeOIDC{ident: sso.Identity{Email: "a@x.com", TenantID: "default", Role: iam.RoleViewer}}
+	h, _ := oidcHandlers(t, f)
+
+	flow, _ := sso.NewFlow()
+	_ = h.store.PutLoginFlow(context.Background(), flow.State,
+		`{"state":"`+flow.State+`","nonce":"`+flow.Nonce+`","code_verifier":"`+flow.CodeVerifier+`"}`, sso.FlowTTL)
+
+	// Case 1: no binding cookie at all.
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?state="+flow.State+"&code=c", nil)
+	h.oidcCallback(rec, r)
+	if rec.Header().Get("Location") != "/?sso_error=1" {
+		t.Fatalf("missing state cookie must be rejected, got %q", rec.Header().Get("Location"))
+	}
+	// Case 2: cookie present but with a DIFFERENT state (attacker's state in URL).
+	rec2 := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?state="+flow.State+"&code=c", nil)
+	r2.AddCookie(&http.Cookie{Name: oidcStateCookie, Value: "some-other-state"})
+	h.oidcCallback(rec2, r2)
+	if rec2.Header().Get("Location") != "/?sso_error=1" {
+		t.Fatalf("mismatched state cookie must be rejected, got %q", rec2.Header().Get("Location"))
+	}
+	// The flow must NOT have been consumed (rejection happened before GETDEL),
+	// and Exchange must never have run.
+	if _, ok, _ := h.store.TakeLoginFlow(context.Background(), flow.State); !ok {
+		t.Fatal("flow was consumed despite the CSRF rejection")
+	}
+	if f.gotCode != "" {
+		t.Fatal("Exchange ran despite the CSRF rejection")
+	}
 }
 
 // Full happy-path callback needs PostgreSQL (JIT user provisioning). Gated like
@@ -168,6 +218,7 @@ func TestOIDCCallback_HappyPath_Integration(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?state="+flow.State+"&code=thecode", nil)
+	r.AddCookie(&http.Cookie{Name: oidcStateCookie, Value: flow.State}) // browser binding
 	h.oidcCallback(rec, r)
 
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {

@@ -1108,14 +1108,17 @@ sharing the bearer secret. AEGIS implements the **Authorization Code flow with
 PKCE**:
 
 1. `GET /api/auth/oidc/login` mints a one-time `state`, `nonce` and PKCE
-   verifier (persisted server-side in Redis, single-use) and redirects to the
-   provider.
+   verifier (persisted server-side in Redis, single-use), sets a short-lived
+   `SameSite=Lax` browser-binding cookie carrying the `state`, and redirects to
+   the provider.
 2. The provider authenticates the operator (including any MFA it enforces) and
    redirects back to `GET /api/auth/oidc/callback`.
-3. AEGIS validates `state` against the stored flow (consumed atomically via
-   `GETDEL`, so a replayed callback fails), exchanges the code for tokens using
-   the PKCE verifier, and verifies the **ID token** against the provider JWKS —
-   signature, issuer, audience, expiry, and `nonce`.
+3. AEGIS first checks the `state` query parameter against the browser-binding
+   cookie (defeating login CSRF / session fixation — an attacker cannot set a
+   victim's cookie), then validates `state` against the stored flow (consumed
+   atomically via `GETDEL`, so a replayed callback fails), exchanges the code for
+   tokens using the PKCE verifier, and verifies the **ID token** against the
+   provider JWKS — signature, issuer, audience, expiry, and `nonce`.
 4. It maps the ID-token claims to AEGIS's model: a configurable group/role claim
    selects `admin`, `viewer`, or super-admin; an optional claim selects the
    tenant. The operator is **just-in-time provisioned** as a console user (with a
@@ -1143,9 +1146,13 @@ Client credentials come from the environment (`AEGIS_OIDC_CLIENT_ID`,
 `AEGIS_OIDC_CLIENT_SECRET`), never the config file. SSO requires `admin_auth`
 and `forensic_dsn` (users are provisioned in the iam store); startup validation
 enforces this and that `redirect_url` is HTTPS and ends in the callback path.
-Compatible with Okta, Auth0, Keycloak, Google, Azure AD and any standards
--compliant OIDC provider. SAML, SCIM auto-provisioning and gateway-enforced MFA
-remain on the roadmap; most providers enforce MFA on their side during step 2.
+It also requires **at least one access restriction** — `admin_roles`,
+`super_admin_roles`, `allowed_domains`, or `require_mapped_role` — so an
+unrestricted config that would let every user in the directory reach the console
+is rejected at startup rather than silently granting viewer access. Compatible
+with Okta, Auth0, Keycloak, Google, Azure AD and any standards-compliant OIDC
+provider. SAML, SCIM auto-provisioning and gateway-enforced MFA remain on the
+roadmap; most providers enforce MFA on their side during step 2.
 
 ### 10.6 Backend Trust and Signature Verification
 

@@ -616,6 +616,17 @@ func validateOIDC(cfg GatewayConfig) error {
 	if !strings.HasSuffix(o.RedirectURL, "/api/auth/oidc/callback") {
 		return fmt.Errorf("oidc.redirect_url must end with /api/auth/oidc/callback, got %q", o.RedirectURL)
 	}
+	// Secure by default: SSO with no access restriction at all grants a console
+	// session (viewer) to EVERY user in the identity provider — almost never the
+	// intent when AEGIS fronts a broad corporate directory. Force an explicit
+	// choice: gate on a group (admin_roles / super_admin_roles), an email domain
+	// (allowed_domains), or require_mapped_role.
+	if len(o.AdminRoles) == 0 && len(o.SuperAdminRoles) == 0 &&
+		len(o.AllowedDomains) == 0 && !o.RequireMappedRole {
+		return errors.New("oidc.enabled with no access restriction would grant console access to every " +
+			"user in the identity provider; set at least one of admin_roles, super_admin_roles, " +
+			"allowed_domains, or require_mapped_role")
+	}
 	return nil
 }
 
