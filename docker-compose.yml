@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # ── API Security Gateway ─────────────────────────────────────────────────────
   # Required env vars (copy .env.example → .env and fill in values):
@@ -7,18 +5,28 @@ services:
   gateway:
     build: .
     ports:
-      - "8080:8080"   # Gateway proxy
-      - "8081:8081"   # Admin API
+      - "8080:8080"                 # Gateway proxy — safe to expose
+      # Admin API is bound to localhost only. The admin plane must never face the
+      # public internet (see §8 "Securing AEGIS Itself"); expose it via a VPN,
+      # SSH tunnel, or an authenticated ingress instead of publishing 8081.
+      - "127.0.0.1:8081:8081"
     volumes:
       - ./config:/app/config
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       - AEGIS_ADMIN_SECRET=${AEGIS_ADMIN_SECRET}
       - AEGIS_REDIS_PASSWORD=${AEGIS_REDIS_PASSWORD}
       - AEGIS_JWT_SECRET=${AEGIS_JWT_SECRET:-}
-      - AEGIS_FORENSIC_DSN=${AEGIS_FORENSIC_DSN:-}
+      # Default the forensic/catalog/iam/audit DSN to the bundled PostgreSQL so
+      # discovery, multi-tenancy, the audit log, SSO and retention work out of the
+      # box. Override AEGIS_FORENSIC_DSN to point at an external database.
+      - AEGIS_FORENSIC_DSN=${AEGIS_FORENSIC_DSN:-postgres://aegis:${POSTGRES_PASSWORD:-aegis}@postgres:5432/aegis?sslmode=disable}
+      - AEGIS_OIDC_CLIENT_ID=${AEGIS_OIDC_CLIENT_ID:-}
+      - AEGIS_OIDC_CLIENT_SECRET=${AEGIS_OIDC_CLIENT_SECRET:-}
     restart: unless-stopped
     networks:
       - aegis
@@ -37,6 +45,26 @@ services:
       --requirepass ${AEGIS_REDIS_PASSWORD}
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${AEGIS_REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - aegis
+
+  # ── PostgreSQL (durable catalog, forensics, IAM, audit) ──────────────────────
+  # Not exposed to the host — only reachable inside the aegis network. Enables the
+  # discovery catalog, multi-tenancy, admin audit log, OIDC SSO and retention.
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=aegis
+      - POSTGRES_USER=aegis
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-aegis}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis -d aegis"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -71,6 +99,7 @@ services:
 
 volumes:
   redis_data:
+  postgres_data:
   prometheus_data:
   grafana_data:
 

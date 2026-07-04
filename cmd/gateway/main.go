@@ -181,14 +181,23 @@ func main() {
 	// than an obvious boot failure. Requires the iam store (validated in config).
 	var ssoAuth *sso.Authenticator
 	if cfg.OIDC.Enabled {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		ssoAuth, err = sso.New(ctx, cfg.OIDC)
-		cancel()
-		if err != nil {
-			log.Error("failed to initialise OIDC SSO", map[string]any{"error": err.Error(), "issuer": cfg.OIDC.Issuer})
-			os.Exit(1)
+		// SSO just-in-time provisions operators in the iam store, so it cannot
+		// function without one. Config validation requires forensic_dsn, but if
+		// the iam store failed to initialise at runtime (DB unreachable) we must
+		// NOT enable SSO — otherwise the callback would have no user store. Leave
+		// ssoAuth nil so the endpoints stay 404 rather than 500.
+		if iamStore == nil {
+			log.Error("OIDC SSO configured but the iam store is unavailable; SSO disabled", nil)
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ssoAuth, err = sso.New(ctx, cfg.OIDC)
+			cancel()
+			if err != nil {
+				log.Error("failed to initialise OIDC SSO", map[string]any{"error": err.Error(), "issuer": cfg.OIDC.Issuer})
+				os.Exit(1)
+			}
+			log.Info("OIDC SSO enabled", map[string]any{"issuer": cfg.OIDC.Issuer})
 		}
-		log.Info("OIDC SSO enabled", map[string]any{"issuer": cfg.OIDC.Issuer})
 	}
 
 	// ── Build Handler Chain ───────────────────────────────────────────────────
@@ -322,6 +331,11 @@ func main() {
 	sig := <-quit
 
 	log.Info("shutdown signal received", map[string]any{"signal": sig.String()})
+
+	// Stop the retention sweep BEFORE the deferred rw.Close() runs, so an
+	// in-flight sweep is cancelled while its connection pool is still open
+	// (cancel-then-close, not the reverse the defer order would give).
+	stopRetention()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -252,6 +252,10 @@ routes:
 # and forensic_dsn. Client credentials come from the environment:
 #   export AEGIS_OIDC_CLIENT_ID=...
 #   export AEGIS_OIDC_CLIENT_SECRET=...
+# You MUST configure at least one access restriction (admin_roles,
+# super_admin_roles, allowed_domains, or require_mapped_role) — otherwise every
+# user in the identity provider could sign in to the console. Startup validation
+# rejects an unrestricted SSO config.
 # oidc:
 #   enabled: true
 #   issuer: "https://your-tenant.okta.com"        # HTTPS; its discovery doc is fetched at startup

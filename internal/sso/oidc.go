@@ -157,8 +157,19 @@ func (a *Authenticator) mapIdentity(claims map[string]any) (Identity, error) {
 	if email == "" {
 		return Identity{}, fmt.Errorf("oidc: id_token has no email claim (add the 'email' scope)")
 	}
-	if verified, ok := claims["email_verified"].(bool); ok && !verified {
-		return Identity{}, fmt.Errorf("oidc: email %q is not verified at the provider", email)
+	// email_verified may arrive as a bool or, from some providers, as a string.
+	// Reject an explicit false in either form; an absent claim is treated as
+	// verified (standard — e.g. Azure AD omits it), but a present false must not
+	// slip through a type mismatch.
+	switch v := claims["email_verified"].(type) {
+	case bool:
+		if !v {
+			return Identity{}, fmt.Errorf("oidc: email %q is not verified at the provider", email)
+		}
+	case string:
+		if strings.EqualFold(strings.TrimSpace(v), "false") {
+			return Identity{}, fmt.Errorf("oidc: email %q is not verified at the provider", email)
+		}
 	}
 	if len(a.cfg.AllowedDomains) > 0 && !domainAllowed(email, a.cfg.AllowedDomains) {
 		return Identity{}, fmt.Errorf("oidc: email domain for %q is not in allowed_domains", email)

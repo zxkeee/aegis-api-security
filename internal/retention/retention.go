@@ -15,6 +15,7 @@ package retention
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -101,13 +102,16 @@ func (w *Worker) runSweep(ctx context.Context) {
 	})
 }
 
-// Sweep performs one retention pass in a single transaction and returns the
-// per-table delete counts. It is exported so it can be driven directly by tests
-// and, potentially, an on-demand admin trigger.
+// Sweep performs one retention pass and returns the per-table delete counts. It
+// is exported so it can be driven directly by tests and, potentially, an
+// on-demand admin trigger.
 //
-// The catalog and forensic tables enforce row-level security keyed on the
+// Each table group runs in its OWN transaction so a failure (or a missing table)
+// on one does not roll back the others — a retention sweep is maintenance and
+// should make whatever progress it can. Errors are collected and joined. The
+// catalog and forensic tables enforce row-level security keyed on the
 // app.tenant_id GUC; this maintenance path sets the documented '*' escape value
-// so a single DELETE spans every tenant (the admin audit log has no RLS and is
+// so a DELETE spans every tenant (the admin audit log has no RLS and is
 // unaffected). now is passed in so tests can pin the clock.
 func (w *Worker) Sweep(ctx context.Context) (Stats, error) {
 	return w.sweepAt(ctx, time.Now())
@@ -115,63 +119,76 @@ func (w *Worker) Sweep(ctx context.Context) (Stats, error) {
 
 func (w *Worker) sweepAt(ctx context.Context, now time.Time) (Stats, error) {
 	var st Stats
-	tx, err := w.db.BeginTx(ctx, nil)
-	if err != nil {
-		return st, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	// Span all tenants for this maintenance transaction (RLS escape hatch).
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', '*', true)`); err != nil {
-		return st, fmt.Errorf("retention: set tenant GUC: %w", err)
-	}
+	var errs []error
 
 	if d := w.cfg.ForensicDays; d > 0 {
 		cutoff := now.AddDate(0, 0, -d)
-		n, err := exec(ctx, tx, `DELETE FROM forensic_logs WHERE ts < $1`, cutoff)
-		if err != nil {
-			return st, fmt.Errorf("retention: forensic_logs: %w", err)
+		if err := w.inTenantTx(ctx, func(tx *sql.Tx) error {
+			n, err := exec(ctx, tx, `DELETE FROM forensic_logs WHERE ts < $1`, cutoff)
+			st.Forensic = n
+			return err
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("forensic_logs: %w", err))
 		}
-		st.Forensic = n
 	}
 
 	if d := w.cfg.AuditDays; d > 0 {
 		cutoff := now.AddDate(0, 0, -d)
-		n, err := exec(ctx, tx, `DELETE FROM admin_audit_log WHERE ts < $1`, cutoff)
-		if err != nil {
-			return st, fmt.Errorf("retention: admin_audit_log: %w", err)
+		if err := w.inTenantTx(ctx, func(tx *sql.Tx) error {
+			n, err := exec(ctx, tx, `DELETE FROM admin_audit_log WHERE ts < $1`, cutoff)
+			st.Audit = n
+			return err
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("admin_audit_log: %w", err))
 		}
-		st.Audit = n
 	}
 
 	if d := w.cfg.ConsumerIdleDays; d > 0 {
 		cutoff := now.AddDate(0, 0, -d)
-		// Prune idle per-pair edges and idle consumers, then sweep any edges left
-		// orphaned (their consumer just went away). Order matters only for the
-		// orphan pass, which runs last.
-		e1, err := exec(ctx, tx, `DELETE FROM api_endpoint_consumers WHERE last_seen < $1`, cutoff)
-		if err != nil {
-			return st, fmt.Errorf("retention: endpoint_consumers: %w", err)
+		if err := w.inTenantTx(ctx, func(tx *sql.Tx) error {
+			// Prune idle per-pair edges and idle consumers, then sweep any edges
+			// left orphaned (their consumer just went away). Orphan pass runs last.
+			e1, err := exec(ctx, tx, `DELETE FROM api_endpoint_consumers WHERE last_seen < $1`, cutoff)
+			if err != nil {
+				return err
+			}
+			c, err := exec(ctx, tx, `DELETE FROM api_consumers WHERE last_seen < $1`, cutoff)
+			if err != nil {
+				return err
+			}
+			e2, err := exec(ctx, tx, `DELETE FROM api_endpoint_consumers e
+				WHERE NOT EXISTS (
+					SELECT 1 FROM api_consumers c
+					WHERE c.tenant_id = e.tenant_id AND c.id = e.consumer_id)`)
+			if err != nil {
+				return err
+			}
+			st.Consumers = c
+			st.ConsumerEdges = e1 + e2
+			return nil
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("consumer graph: %w", err))
 		}
-		c, err := exec(ctx, tx, `DELETE FROM api_consumers WHERE last_seen < $1`, cutoff)
-		if err != nil {
-			return st, fmt.Errorf("retention: consumers: %w", err)
-		}
-		e2, err := exec(ctx, tx, `DELETE FROM api_endpoint_consumers e
-			WHERE NOT EXISTS (
-				SELECT 1 FROM api_consumers c
-				WHERE c.tenant_id = e.tenant_id AND c.id = e.consumer_id)`)
-		if err != nil {
-			return st, fmt.Errorf("retention: orphan edges: %w", err)
-		}
-		st.Consumers = c
-		st.ConsumerEdges = e1 + e2
 	}
 
-	if err := tx.Commit(); err != nil {
-		return st, err
+	return st, errors.Join(errs...)
+}
+
+// inTenantTx runs fn in a transaction that spans all tenants via the RLS
+// app.tenant_id='*' escape hatch, committing on success.
+func (w *Worker) inTenantTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	return st, nil
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', '*', true)`); err != nil {
+		return fmt.Errorf("set tenant GUC: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func exec(ctx context.Context, tx *sql.Tx, query string, args ...any) (int64, error) {

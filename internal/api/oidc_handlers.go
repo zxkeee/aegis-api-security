@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 
@@ -10,6 +11,15 @@ import (
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/sso"
 )
+
+// oidcStateCookie binds a login attempt to the browser that started it. It
+// carries the flow's `state` and is checked against the `state` query parameter
+// at the callback: an attacker cannot set a victim's cookie, so a forged
+// callback (login CSRF / session fixation) is rejected before any token
+// exchange. It is deliberately SameSite=Lax — the callback is a top-level
+// cross-site GET redirected from the IdP, and a Strict cookie would not be sent
+// on it. Scoped to the callback path and short-lived (matches the flow TTL).
+const oidcStateCookie = "aegis_oidc_state"
 
 // OIDCAuthenticator is the slice of *sso.Authenticator the handlers depend on,
 // declared as an interface so the callback flow can be unit-tested with a fake
@@ -20,8 +30,9 @@ type OIDCAuthenticator interface {
 }
 
 // oidcEnabled reports whether SSO is wired (config on AND the authenticator
-// built successfully at startup). When off, the endpoints 404 so the surface is
-// invisible.
+// built at startup). main only builds the authenticator when the iam store is
+// also present (SSO provisions users there), so a live authenticator implies a
+// usable user store; the callback additionally guards h.users defensively.
 func (h *handlers) oidcEnabled() bool {
 	return h.cfg.OIDC.Enabled && h.oidc != nil
 }
@@ -50,6 +61,17 @@ func (h *handlers) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "could not start sso login")
 		return
 	}
+	// Bind this attempt to the browser: the callback must present the same state
+	// in this cookie, defeating login CSRF / session fixation.
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure default on; SameSite=Lax required for the cross-site callback
+		Name:     oidcStateCookie,
+		Value:    flow.State,
+		Path:     "/api/auth/oidc/callback",
+		HttpOnly: true,
+		Secure:   !h.cfg.AdminCookieInsecure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(sso.FlowTTL.Seconds()),
+	})
 	http.Redirect(w, r, h.oidc.AuthCodeURL(flow), http.StatusFound)
 }
 
@@ -74,6 +96,19 @@ func (h *handlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	if state == "" || code == "" {
 		h.oidcFail(w, r, "malformed sso callback")
+		return
+	}
+
+	// Browser binding: the state in the URL must equal the state in the cookie
+	// this browser was issued at login. An attacker who obtains a valid
+	// (state, code) pair cannot set the victim's cookie, so a forged callback is
+	// rejected here — before any token exchange (login CSRF / session fixation).
+	h.clearOIDCStateCookie(w)
+	sc, cerr := r.Cookie(oidcStateCookie)
+	if cerr != nil || sc.Value == "" ||
+		subtle.ConstantTimeCompare([]byte(sc.Value), []byte(state)) != 1 {
+		h.log.Warn("oidc: state/cookie mismatch (possible login CSRF)", map[string]any{"ip": ip})
+		h.oidcFail(w, r, "sso login could not be verified; please try again")
 		return
 	}
 
@@ -107,6 +142,14 @@ func (h *handlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Defensive guard: SSO requires the iam store to provision users. main does
+	// not build the authenticator without it, so this should be unreachable — but
+	// a nil here must fail gracefully, never nil-deref.
+	if h.users == nil {
+		h.log.Error("oidc: user store unavailable; cannot provision SSO user", nil)
+		h.oidcFail(w, r, "sso login failed")
+		return
+	}
 	// JIT-provision (or re-sync) the operator, then build the session.
 	u, err := h.users.UpsertSSOUser(r.Context(), ident.TenantID, ident.Email, ident.Role, ident.SuperAdmin)
 	if err != nil {
@@ -143,4 +186,12 @@ func (h *handlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 // can surface, rather than dumping a raw error page.
 func (h *handlers) oidcFail(w http.ResponseWriter, r *http.Request, _ string) {
 	http.Redirect(w, r, "/?sso_error=1", http.StatusFound)
+}
+
+// clearOIDCStateCookie expires the browser-binding cookie (single-use).
+func (h *handlers) clearOIDCStateCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- clearing the binding cookie
+		Name: oidcStateCookie, Value: "", Path: "/api/auth/oidc/callback",
+		HttpOnly: true, Secure: !h.cfg.AdminCookieInsecure, SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	})
 }
