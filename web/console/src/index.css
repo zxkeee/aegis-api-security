@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Semantic design tokens. Dark is the default (OLED-friendly); .light overrides.
+   HSL channels so Tailwind's <alpha-value> works. */
+:root,
+.dark {
+  --bg: 222 47% 6%; /* #0B1120-ish deep slate */
+  --surface: 222 40% 9%;
+  --elevated: 222 33% 13%;
+  --border: 217 25% 20%;
+  --fg: 210 40% 98%;
+  --muted: 215 18% 60%;
+  --accent: 142 71% 45%; /* run green */
+  --accent-fg: 222 47% 6%;
+  --danger: 0 84% 60%;
+  --warn: 38 92% 55%;
+  --ok: 142 71% 45%;
+}
+
+.light {
+  --bg: 210 40% 98%;
+  --surface: 0 0% 100%;
+  --elevated: 210 40% 96%;
+  --border: 215 20% 88%;
+  --fg: 222 47% 11%;
+  --muted: 215 16% 42%;
+  --accent: 142 64% 34%;
+  --accent-fg: 0 0% 100%;
+  --danger: 0 72% 46%;
+  --warn: 32 85% 42%;
+  --ok: 142 64% 34%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+  font-feature-settings: "cv11", "ss01";
+  text-rendering: optimizeLegibility;
+}
+
+/* Tabular figures for data columns so numbers don't jitter. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom, minimal scrollbars. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted));
+  background-clip: content-box;
+}
+
+/* Visible focus for keyboard nav (a11y). */
+:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

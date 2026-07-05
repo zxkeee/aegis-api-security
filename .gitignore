@@ -26,6 +26,13 @@ go.work.sum
 # Stray loadgen binary from `go build ./tests/load`
 /load
 
+# ── Frontend console (web/console) ───────────────────────────────────────────
+# Source is tracked; the built bundle (internal/api/console_dist) is committed so
+# `go build` embeds it without needing Node. Only the toolchain output is ignored.
+node_modules/
+web/console/.vite/
+*.tsbuildinfo
+
 # ── Secrets & local state (never commit) ─────────────────────────────────────
 # .env holds real secrets; .env.example is the committed template.
 .env

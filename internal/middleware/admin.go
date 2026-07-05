@@ -41,13 +41,19 @@ func AdminAuth(cfg config.GatewayConfig, log Logger, st adminStore, aud audit.Re
 				return
 			}
 
-			// Public endpoints: probes, the dashboard shell, the login route, and
-			// the OIDC SSO flow (the flow itself IS the authentication).
+			// Public endpoints: probes, the console shell + its static bundle, the
+			// public bootstrap, the login route, and the OIDC SSO flow (the flow
+			// itself IS the authentication). Everything else requires a session.
 			switch r.URL.Path {
-			case "/health", "/readyz", "/":
+			case "/health", "/readyz", "/", "/api/console/env":
 				next.ServeHTTP(w, r)
 				return
 			case "/api/login", "/api/auth/oidc/login", "/api/auth/oidc/callback":
+				next.ServeHTTP(w, r)
+				return
+			}
+			// The console's hashed bundle assets are public (they contain no data).
+			if strings.HasPrefix(r.URL.Path, "/assets/") {
 				next.ServeHTTP(w, r)
 				return
 			}

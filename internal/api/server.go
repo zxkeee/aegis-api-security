@@ -56,8 +56,12 @@ func (s *Server) registerRoutes() {
 		h.specCat = s.catalog
 	}
 
-	// Dashboard (unauthenticated — auth handled via JS prompt)
+	// Console SPA shell (unauthenticated shell; the data APIs below are guarded).
 	s.mux.HandleFunc("GET /", h.serveDashboard)
+	// Hashed bundle assets (JS/CSS/svg).
+	s.mux.HandleFunc("GET /assets/", h.serveConsoleAsset)
+	// Public bootstrap: tells the login screen whether admin_auth / SSO are on.
+	s.mux.HandleFunc("GET /api/console/env", h.consoleEnv)
 
 	// Probes (unauthenticated)
 	s.mux.HandleFunc("GET /health", h.health)

@@ -1260,30 +1260,30 @@ curl -s -H "Authorization: Bearer $AEGIS_ADMIN_SECRET" \
 
 ## 12. Dashboard Guide
 
-The console is served from the admin plane and authenticates with the admin
-bearer token entered at login. It is organised into the following views:
+The console is a **React single-page app** (Vite + TypeScript + Tailwind +
+Framer Motion) with a minimalist dark/light theme. Its source lives in
+`web/console/`; `make console` builds it into `internal/api/console_dist`, which
+is embedded into the binary via `go:embed` — the built bundle is committed, so
+`go build` needs no Node. It is served from the admin plane and authenticates
+via the admin secret, an email/password operator, or OIDC SSO. Views:
 
-- **Overview** — total evaluated traffic, blocked versus passed, discovered
-  endpoint count, a live traffic chart and a threat breakdown, and recent
-  incidents.
-- **Threat Feed** — the complete forensic event log.
-- **Analytics** — request volume, blocks by category, top endpoints by request
-  count, and an origin breakdown.
-- **API Catalog** — the discovered endpoints with posture badges
-  (protected/partial/unprotected/shadow), risk score, request counts, PII flag,
-  and last-seen time; filterable by posture and path; a row opens a detail panel
-  showing effective controls, status distribution and the endpoint's consumers;
-  the catalog can be exported to CSV.
-- **Posture** — a coverage donut, an effectiveness breakdown of blocks by
-  control, and the top-risk endpoints.
-- **Consumers** — who calls the APIs, with request volume, error rate, number of
-  endpoints touched and last-seen time.
-- **API Keys** — authentication-related events.
-- **Access Control** — view and manage the dynamic IP blocklist.
-- **Settings** — the effective (sanitised) configuration and the routing table.
+- **Overview** — requests passed vs. total blocks, coverage, endpoint count,
+  blocks-by-control bars and the posture distribution, plus top-risk endpoints.
+- **Catalog** — discovered endpoints with posture badges
+  (protected/partial/unprotected/shadow), risk, request/PII counts and last-seen;
+  searchable and filterable by posture.
+- **Posture** — an animated coverage ring and the per-class endpoint counts.
+- **Findings** — actionable security exposures, critical first.
+- **Consumers** — who calls the APIs, with request volume, error rate and reach.
+- **Forensics** — the recent security block-event log.
+- **Access** — manage the dynamic IP blocklist and revoke JWTs by `jti`.
 
-The console refreshes the active view periodically and reflects the live state of
-Redis and the catalog.
+The console polls live views, animates transitions, and honours
+`prefers-reduced-motion`. Its CSP keeps `script-src 'self'` strict (the Vite
+bundle is self-hosted, no inline script, no eval); `style-src` allows
+`'unsafe-inline'` for the runtime animation styles (style injection cannot
+execute code). For local UI work, `make console-dev` runs the Vite dev server
+with HMR, proxied to a gateway on `:8081`.
 
 ---
 

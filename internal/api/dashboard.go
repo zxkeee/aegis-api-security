@@ -1,68 +1,94 @@
 package api
 
 import (
-	"crypto/rand"
 	"embed"
-	"encoding/base64"
+	"io/fs"
 	"net/http"
 	"strings"
 )
 
-//go:embed static/dashboard.html
-var dashboardFS embed.FS
+//go:embed all:console_dist
+var consoleFS embed.FS
 
-// serveDashboard serves the built-in admin dashboard UI. CSP is nonce-based:
-// every response gets a freshly generated nonce, the same nonce is injected
-// into every inline <script> and <style> tag, and the CSP allows only that
-// nonce — `unsafe-inline` is gone. An attacker who lands stored content in
-// the page cannot execute it without knowing the per-request nonce.
+// consoleAssets is the built React console (Vite output) rooted at console_dist.
+var consoleAssets, _ = fs.Sub(consoleFS, "console_dist")
+
+// consoleCSP is the Content-Security-Policy for the single-page console.
+//
+// script-src stays strict 'self': the Vite production bundle is a hashed,
+// self-hosted module with no inline scripts and no eval, so XSS cannot execute
+// injected script. style-src allows 'unsafe-inline' because the animation layer
+// (Framer Motion) and React set inline styles at runtime; style injection cannot
+// execute code, so this is a deliberate, bounded relaxation — the important
+// anti-XSS control (script-src) remains locked down.
+const consoleCSP = "default-src 'self'; " +
+	"script-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data:; " +
+	"font-src 'self'; " +
+	"connect-src 'self'; " +
+	"base-uri 'self'; " +
+	"form-action 'self'; " +
+	"frame-ancestors 'none'"
+
+// serveDashboard serves the console's index.html shell. Any non-asset path
+// resolves here (SPA fallback), so client-side navigation works on reload.
 func (h *handlers) serveDashboard(w http.ResponseWriter, r *http.Request) {
-	data, err := dashboardFS.ReadFile("static/dashboard.html")
+	data, err := consoleAssets.(fs.ReadFileFS).ReadFile("index.html")
 	if err != nil {
-		http.Error(w, "Dashboard not found", 500)
+		http.Error(w, "console not built", http.StatusInternalServerError)
 		return
 	}
-
-	// 16 bytes → 22-char base64 nonce; new value per response.
-	var nb [16]byte
-	if _, err := rand.Read(nb[:]); err != nil {
-		http.Error(w, "csp nonce", http.StatusInternalServerError)
-		return
-	}
-	nonce := base64.RawStdEncoding.EncodeToString(nb[:])
-
-	// Inject `nonce="..."` into every inline tag. Templates would be cleaner
-	// but the dashboard is a single embedded blob; a literal replace keeps the
-	// file content unmodified at build time.
-	html := strings.ReplaceAll(string(data), "<script>", `<script nonce="`+nonce+`">`)
-	html = strings.ReplaceAll(html, "<style>", `<style nonce="`+nonce+`">`)
-
-	// Tell the login screen whether SSO is available, so it can reveal the
-	// "Sign in with SSO" button. "1" enabled, "0" off.
-	ssoFlag := "0"
-	if h.oidcEnabled() {
-		ssoFlag = "1"
-	}
-	html = strings.ReplaceAll(html, "__SSO_ENABLED__", ssoFlag)
-
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/html; charset=utf-8")
 	hdr.Set("Cache-Control", "no-store")
-	// Prevent the dashboard from being embedded in iframes (clickjacking).
+	hdr.Set("Content-Security-Policy", consoleCSP)
 	hdr.Set("X-Frame-Options", "DENY")
 	hdr.Set("X-Content-Type-Options", "nosniff")
-	// Nonce-based CSP — no `unsafe-inline`. Google Fonts stays whitelisted for
-	// the font-face requests the inline @import triggers.
-	hdr.Set("Content-Security-Policy",
-		"default-src 'self'; "+
-			"script-src 'self' 'nonce-"+nonce+"'; "+
-			"style-src 'self' 'nonce-"+nonce+"' https://fonts.googleapis.com; "+
-			"font-src https://fonts.gstatic.com; "+
-			"connect-src 'self'; "+
-			"img-src 'self' data:; "+
-			"base-uri 'self'; "+
-			"form-action 'self'; "+
-			"frame-ancestors 'none'")
+	_, _ = w.Write(data)
+}
 
-	_, _ = w.Write([]byte(html))
+// serveConsoleAsset serves the hashed bundle assets (JS/CSS/svg) with a long
+// immutable cache, since Vite fingerprints change the URL on every build.
+func (h *handlers) serveConsoleAsset(w http.ResponseWriter, r *http.Request) {
+	// Path is "/assets/console.js" etc.; strip the leading slash for the sub-FS.
+	name := strings.TrimPrefix(r.URL.Path, "/")
+	data, err := consoleAssets.(fs.ReadFileFS).ReadFile(name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	hdr := w.Header()
+	hdr.Set("Content-Type", contentType(name))
+	hdr.Set("Cache-Control", "public, max-age=31536000, immutable")
+	hdr.Set("X-Content-Type-Options", "nosniff")
+	// #nosec G705 -- data is a compiled-in embedded asset (our own build output),
+	// not user input; the URL only selects which embedded file. Served with an
+	// explicit non-HTML Content-Type plus nosniff, and embed.FS rejects traversal.
+	_, _ = w.Write(data)
+}
+
+// consoleEnv is a public bootstrap endpoint: it exposes only whether admin
+// authentication and OIDC SSO are enabled, so the login screen can render the
+// right controls. No secrets.
+func (h *handlers) consoleEnv(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"admin_auth": h.cfg.AdminAuth,
+		"sso":        h.oidcEnabled(),
+	})
+}
+
+func contentType(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".js"):
+		return "text/javascript; charset=utf-8"
+	case strings.HasSuffix(name, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(name, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(name, ".woff2"):
+		return "font/woff2"
+	default:
+		return "application/octet-stream"
+	}
 }
