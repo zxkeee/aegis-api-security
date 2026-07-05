@@ -1,45 +1,63 @@
 # If you prefer the allow list template instead of the deny list, see community template:
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+
+# ── Go build & test artifacts ────────────────────────────────────────────────
+# Compiled binaries and plugins
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-
 # Test binary, built with `go test -c`
 *.test
-
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
 *.coverprofile
 profile.cov
-
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
+# Go workspace files
 go.work
 go.work.sum
+# Dependency directory (we vendor nothing; uncomment to include)
+# vendor/
 
-# env file
-.env
-
-# Editor/IDE
-# .idea/
-# .vscode/
-
-# OS junk
-.DS_Store
-
-# Build output
+# ── Build output ─────────────────────────────────────────────────────────────
 /bin/
 # Stray loadgen binary from `go build ./tests/load`
 /load
 
+# ── Secrets & local state (never commit) ─────────────────────────────────────
+# .env holds real secrets; .env.example is the committed template.
+.env
+.env.local
+.env.*.local
+# Key / certificate material
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
 # Redis dump (local dev)
 *.rdb
 dump.rdb
+# gosec output (build artifact — was committed once by mistake)
 gosec_results.json
+
+# ── Editor / IDE ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS junk ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Misc scratch / patch leftovers ───────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
