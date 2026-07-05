@@ -241,3 +241,34 @@ func TestStore_Forensic(t *testing.T) {
 		t.Errorf("forensic log = %+v", log)
 	}
 }
+
+// Normal client-facing statuses (401/403/404) and backend 5xx must NOT feed the
+// ban-signalling error score — only genuinely abusive ones (400/429) do. This
+// guards against auto-banning active clients (esp. behind shared IP/NAT) that
+// simply hit missing or protected endpoints.
+func TestStore_BehaviorErrorSignalIsNarrow(t *testing.T) {
+	ctx := context.Background()
+
+	scoreAfter := func(status int) int {
+		st := newTestStore(t)
+		// 20 responses of the given status from one IP within the window.
+		for i := 0; i < 20; i++ {
+			st.RecordRequest(ctx, "ip", "/p", status)
+		}
+		return st.CalcBehaviorScore(ctx, "ip", 70)
+	}
+
+	// errScore contributes up to +30 (errs*3). reqScore for 20 reqs = 20/5 = +4,
+	// entropy for 1 path ~ 0. So a "not an error" status yields a small score
+	// (~4), while an "abusive" one adds the error component on top.
+	for _, normal := range []int{401, 403, 404, 500, 502, 503} {
+		if s := scoreAfter(normal); s > 10 {
+			t.Fatalf("status %d contributed to the error score (total=%d); it must not", normal, s)
+		}
+	}
+	for _, abusive := range []int{400, 429} {
+		if s := scoreAfter(abusive); s < 30 {
+			t.Fatalf("abusive status %d should raise the error score, got %d", abusive, s)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -155,5 +156,72 @@ func TestWAF_DisabledIsPassthrough(t *testing.T) {
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	if code := wafDo(t, h, http.MethodPost, "/x", "application/json", `{"q":"union select from users"}`); code != http.StatusOK {
 		t.Errorf("disabled WAF should pass through: got %d", code)
+	}
+}
+
+// wafRecordStore observes the WAF's metric + behaviour-penalty side effects.
+type wafRecordStore struct {
+	*fakeStore
+	metrics map[string]int
+	penalty int
+}
+
+func newWAFRecordStore() *wafRecordStore {
+	return &wafRecordStore{fakeStore: &fakeStore{}, metrics: map[string]int{}}
+}
+func (s *wafRecordStore) IncrMetric(_ context.Context, name string)            { s.metrics[name]++ }
+func (s *wafRecordStore) IncrBehaviorScore(_ context.Context, _ string, p int) { s.penalty += p }
+
+// A backend response of 403/400/405 must NOT be attributed to the WAF: no
+// waf_blocked metric, no forensic block, and no behaviour penalty (which would
+// otherwise push clients hitting authz-protected endpoints toward auto-ban).
+func TestWAF_UpstreamBlockStatusNotAttributed(t *testing.T) {
+	for _, code := range []int{http.StatusForbidden, http.StatusBadRequest, http.StatusMethodNotAllowed} {
+		st := newWAFRecordStore()
+		h := WAF(config.WAFConfig{Enabled: true, BlockMode: true}, fakeLogger{}, st)(
+			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+
+		rec := httptest.NewRecorder()
+		// A benign request the WAF lets through; the backend returns `code`.
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+
+		if rec.Code != code {
+			t.Fatalf("upstream status not passed through: got %d want %d", rec.Code, code)
+		}
+		if st.metrics["waf_blocked"] != 0 {
+			t.Fatalf("upstream %d mis-counted as waf_blocked", code)
+		}
+		if st.penalty != 0 {
+			t.Fatalf("upstream %d added a behaviour penalty of %d", code, st.penalty)
+		}
+		if st.metrics["requests_passed_waf"] != 1 {
+			t.Fatalf("passed request not counted as requests_passed_waf (%d)", st.metrics["requests_passed_waf"])
+		}
+		if n := len(st.forensic); n != 0 {
+			t.Fatalf("upstream %d wrote %d forensic block events", code, n)
+		}
+	}
+}
+
+// A genuine WAF interruption is still counted and penalised.
+func TestWAF_RealBlockStillAttributed(t *testing.T) {
+	st := newWAFRecordStore()
+	h := WAF(config.WAFConfig{Enabled: true, BlockMode: true}, fakeLogger{}, st)(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?q=1%20UNION%20SELECT%20password%20FROM%20users", nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("SQLi not blocked: got %d", rec.Code)
+	}
+	if st.metrics["waf_blocked"] != 1 {
+		t.Fatalf("real WAF block not counted (waf_blocked=%d)", st.metrics["waf_blocked"])
+	}
+	if st.penalty != 15 {
+		t.Fatalf("real WAF block penalty = %d, want 15", st.penalty)
+	}
+	if len(st.forensic) != 1 {
+		t.Fatalf("real WAF block wrote %d forensic events, want 1", len(st.forensic))
 	}
 }

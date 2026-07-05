@@ -675,7 +675,9 @@ bypass the deny checks.
 it defensively (bounded download size and entry count), and blocks any client IP
 present in the feed. The feed is refreshed on a configurable interval and a
 parse error preserves the previous list rather than replacing it with partial
-data.
+data. Redirects are followed only when they stay HTTPS and point at a non-private
+host, so the HTTPS guarantee cannot be bypassed via a redirect to `http://` or an
+internal address (e.g. cloud metadata) — closing a blind-SSRF vector.
 
 ### 6.6 Bot and Automation Defence
 
@@ -694,6 +696,11 @@ header is always stripped.
 `BehaviorAnalysis` computes a per-IP risk score from a sliding window of activity
 held in Redis: request volume, error count, path entropy (distinct paths, tracked
 with a HyperLogLog), burst activity and accumulated penalties from other controls.
+The error signal is deliberately narrow — only genuinely abusive statuses (`400`
+malformed, `429` rate-limited) count, not the normal `401`/`403`/`404` responses
+or backend `5xx` — so an active client behind a shared IP/NAT is not auto-banned
+merely for hitting missing or protected endpoints (path scanning is still caught
+by the distinct-path entropy component).
 When the score reaches the configured threshold the request is denied; repeated
 violations escalate to an automatic, time-bounded IP ban added to the dynamic
 blocklist. Scoring is preventive — the score from prior activity is evaluated

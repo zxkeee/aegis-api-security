@@ -134,9 +134,20 @@ type Catalog struct {
 	cfgSpec   *Spec
 	specCache map[string]specCacheEntry
 
+	// seen bounds the TOTAL number of distinct endpoints ever cataloged for this
+	// process, so a path-flood through a catch-all route cannot grow api_endpoints
+	// without limit (the per-window map cap only rate-limits). Touched only by the
+	// single worker goroutine, so no lock. Mirrors the Redis inventory cap.
+	seen         map[string]struct{}
+	maxEndpoints int // cap on len(seen); defaults to maxCatalogEndpoints
+
 	wg   sync.WaitGroup
 	quit chan struct{}
 }
+
+// maxCatalogEndpoints caps distinct endpoints the catalog will create. A real
+// API surface is far below this; the cap only stops a cardinality-flood attack.
+const maxCatalogEndpoints = 50_000
 
 type specCacheEntry struct {
 	uploadedAt time.Time
@@ -151,12 +162,14 @@ func NewCatalog(dsn string, posture *PostureEngine, log Logger) (*Catalog, error
 		return nil, err
 	}
 	c := &Catalog{
-		pg:        pg,
-		log:       log,
-		ch:        make(chan Observation, 8192),
-		posture:   posture,
-		specCache: map[string]specCacheEntry{},
-		quit:      make(chan struct{}),
+		pg:           pg,
+		log:          log,
+		ch:           make(chan Observation, 8192),
+		posture:      posture,
+		specCache:    map[string]specCacheEntry{},
+		seen:         map[string]struct{}{},
+		maxEndpoints: maxCatalogEndpoints,
+		quit:         make(chan struct{}),
 	}
 	c.wg.Add(1)
 	go c.worker()
@@ -260,6 +273,21 @@ func (c *Catalog) aggregate(obs Observation, eps map[string]*epAgg,
 
 	a := eps[epKey]
 	if a == nil {
+		// Cardinality cap (opt-in: maxEndpoints > 0): a brand-new endpoint (not seen
+		// this process) is dropped once the catalog is at capacity, so a path-flood
+		// cannot grow the catalog unbounded. Endpoints already known keep aggregating
+		// normally.
+		if c.maxEndpoints > 0 {
+			if _, known := c.seen[epKey]; !known {
+				if len(c.seen) >= c.maxEndpoints {
+					return
+				}
+				if c.seen == nil {
+					c.seen = map[string]struct{}{}
+				}
+				c.seen[epKey] = struct{}{}
+			}
+		}
 		a = &epAgg{
 			tenant:       tnt,
 			id:           id,

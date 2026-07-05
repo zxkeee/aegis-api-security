@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -67,6 +68,41 @@ func ThreatFeed(cfg config.ThreatFeedConfig, log Logger, st DenySink) Middleware
 	}
 }
 
+// checkFeedRedirect is the redirect policy for feed fetches: only follow HTTPS
+// redirects to non-private hosts, and cap the hop count. This preserves the
+// config-enforced HTTPS-only guarantee (a redirect to http:// or an internal
+// address such as cloud metadata would otherwise be a blind SSRF).
+func checkFeedRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return fmt.Errorf("threat_feed: too many redirects")
+	}
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("threat_feed: refusing non-https redirect to %q", req.URL.Redacted())
+	}
+	if host := req.URL.Hostname(); isPrivateOrLocalHost(host) {
+		return fmt.Errorf("threat_feed: refusing redirect to private/loopback host %q", host)
+	}
+	return nil
+}
+
+// isPrivateOrLocalHost reports whether a redirect target host is an internal
+// address a public threat feed must never point us at. It blocks the literal
+// "localhost" and any IP literal that is loopback, private, link-local (covers
+// 169.254.169.254 cloud metadata) or unspecified. A bare DNS name that resolves
+// to a private IP is not caught here (no lookup on the hot path); the scheme +
+// IP-literal checks cover the realistic MITM/SSRF vectors.
+func isPrivateOrLocalHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false // a domain name; allowed (HTTPS + public-name redirect)
+	}
+	return ip.IsLoopback() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
 type threatFeed struct {
 	url      string
 	interval time.Duration
@@ -76,7 +112,12 @@ type threatFeed struct {
 }
 
 func (tf *threatFeed) refresh() {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// The feed URL is validated HTTPS at config load to prevent MITM, but the
+	// default client would follow a redirect to http:// or an internal address
+	// (e.g. cloud metadata at 169.254.169.254), undermining that guarantee and
+	// enabling a blind SSRF. Only follow HTTPS redirects to non-private hosts,
+	// and cap the hop count.
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: checkFeedRedirect}
 	resp, err := client.Get(tf.url)
 	if err != nil {
 		tf.log.Error("threat_feed: fetch error", map[string]any{"error": err.Error()})

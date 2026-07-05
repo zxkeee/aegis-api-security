@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -258,7 +259,13 @@ func (s *Store) RecordRequest(ctx context.Context, ip, path string, statusCode i
 	pipe.Incr(ctx, base+":reqs")
 	pipe.Expire(ctx, base+":reqs", 60*time.Second)
 
-	if statusCode >= 400 {
+	// Only genuinely abusive statuses feed the ban-signalling error counter.
+	// 401/403/404 are NORMAL API responses (not logged in, forbidden/authz denied,
+	// resource missing) — counting them would let an active client behind a shared
+	// IP/NAT accrue a ban simply by hitting missing or protected endpoints. 5xx is
+	// the backend's fault (a backend outage must not mass-ban every client). Path
+	// scanning is already captured by the distinct-path entropy score, not here.
+	if isAbusiveStatus(statusCode) {
 		pipe.Incr(ctx, base+":errs")
 		pipe.Expire(ctx, base+":errs", 60*time.Second)
 	}
@@ -270,6 +277,14 @@ func (s *Store) RecordRequest(ctx context.Context, ip, path string, statusCode i
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.client.Incr(ctx, tkey(ctx, "metrics:behavior_record_redis_error")) //nolint:errcheck
 	}
+}
+
+// isAbusiveStatus reports whether a response status is a behavioural-abuse
+// signal (malformed request, or the client being rate-limited) rather than a
+// normal client-facing outcome. Deliberately narrow to avoid false-positive
+// auto-bans on ordinary 401/403/404/5xx traffic.
+func isAbusiveStatus(code int) bool {
+	return code == http.StatusBadRequest || code == http.StatusTooManyRequests
 }
 
 // CalcBehaviorScore calculates a risk score (0-100) for an IP.
