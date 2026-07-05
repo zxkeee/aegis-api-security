@@ -121,13 +121,26 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 	})
 
 	return func(next http.Handler) http.Handler {
-		wrapped := txhttp.WrapHandler(waf, next)
-
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			sw := &wafStatusWriter{ResponseWriter: w, status: 200}
-			wrapped.ServeHTTP(sw, r)
+			// Distinguish a real WAF interruption from a downstream response. Coraza
+			// calls next ONLY when it does NOT block, so a closure-captured flag set
+			// by this sentinel tells us the request reached the backend. Without it,
+			// an upstream 403/400/405 was indistinguishable from a Coraza block and
+			// was mis-counted as waf_blocked (inflating metrics/forensics AND adding a
+			// behaviour penalty toward auto-ban for clients hitting endpoints that
+			// legitimately return those statuses).
+			reached := false
+			sentinel := http.HandlerFunc(func(sw http.ResponseWriter, sr *http.Request) {
+				reached = true
+				next.ServeHTTP(sw, sr)
+			})
 
-			if sw.status == 403 || sw.status == 400 || sw.status == 405 {
+			sw := &wafStatusWriter{ResponseWriter: w, status: 200}
+			txhttp.WrapHandler(waf, sentinel).ServeHTTP(sw, r)
+
+			// A WAF block: the request never reached the backend and Coraza wrote a
+			// block status. If it reached the backend, the status is the upstream's.
+			if !reached && (sw.status == 403 || sw.status == 400 || sw.status == 405) {
 				ip := RealIP(r)
 				st.IncrMetric(r.Context(), "waf_blocked")
 				st.IncrBehaviorScore(r.Context(), ip, 15)
@@ -142,7 +155,7 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 					Reason:    "waf_blocked",
 					Code:      sw.status,
 				})
-			} else {
+			} else if reached {
 				st.IncrMetric(r.Context(), "requests_passed_waf")
 			}
 		})

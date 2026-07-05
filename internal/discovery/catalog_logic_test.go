@@ -137,3 +137,55 @@ func TestSetPostureEngine_Swaps(t *testing.T) {
 		t.Fatal("posture engine was not swapped")
 	}
 }
+
+// The catalog caps the total number of distinct endpoints so a path-flood
+// through a catch-all route cannot grow api_endpoints without bound. New
+// endpoints past the cap are dropped; endpoints already known keep aggregating.
+func TestAggregate_CardinalityCap(t *testing.T) {
+	c := &Catalog{
+		posture:      NewPostureEngine(config.GatewayConfig{}),
+		seen:         map[string]struct{}{},
+		maxEndpoints: 3, // tiny cap for the test
+	}
+	eps := map[string]*epAgg{}
+	cons := map[string]*consumerAgg{}
+	epCons := map[[3]string]int64{}
+
+	// Ten distinct alphabetic paths (which NormalizePath does NOT collapse).
+	for _, p := range []string{"/a", "/b", "/c", "/d", "/e", "/f", "/g", "/h", "/i", "/j"} {
+		c.aggregate(Observation{Method: "GET", Path: p, Status: 200}, eps, cons, epCons)
+	}
+	if len(eps) != 3 {
+		t.Fatalf("cardinality cap not enforced: cataloged %d endpoints, want 3", len(eps))
+	}
+	if len(c.seen) != 3 {
+		t.Fatalf("seen set = %d, want 3", len(c.seen))
+	}
+
+	// A known endpoint (already in the window) still aggregates past the cap.
+	c.aggregate(Observation{Method: "GET", Path: "/a", Status: 200}, eps, cons, epCons)
+	var aReqs int64
+	for k, v := range eps {
+		if k == tenantDefaultKey("GET /a") {
+			aReqs = v.requestCount
+		}
+	}
+	if aReqs != 2 {
+		t.Fatalf("known endpoint stopped aggregating after cap: /a reqs=%d, want 2", aReqs)
+	}
+}
+
+func tenantDefaultKey(id string) string { return "default\x00" + id }
+
+// maxEndpoints == 0 means "unlimited" so a zero-value / struct-literal Catalog
+// (used across the aggregate unit tests) never drops endpoints.
+func TestAggregate_ZeroCapIsUnlimited(t *testing.T) {
+	c := newTestCatalog() // maxEndpoints == 0
+	eps := map[string]*epAgg{}
+	for _, p := range []string{"/a", "/b", "/c", "/d", "/e"} {
+		c.aggregate(Observation{Method: "GET", Path: p, Status: 200}, eps, map[string]*consumerAgg{}, map[[3]string]int64{})
+	}
+	if len(eps) != 5 {
+		t.Fatalf("zero cap must not drop endpoints; got %d want 5", len(eps))
+	}
+}

@@ -55,6 +55,20 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] Client-supplied `X-Request-ID` is sanitised (charset + 64-char cap)
       before being logged/echoed/forwarded; deprecated `X-XSS-Protection`
       header dropped (CSP is the control).
+- [x] **No false-positive auto-bans on normal traffic.** The behavioural error
+      signal now counts only genuinely abusive statuses (`400`/`429`), not the
+      normal `401`/`403`/`404` or backend `5xx`, so an active client behind a
+      shared IP/NAT is not banned for hitting missing/protected endpoints. The
+      WAF no longer mis-attributes an upstream `403`/`400`/`405` as its own block
+      (a "reached backend" sentinel distinguishes a Coraza interruption from a
+      passed-through downstream status), so those responses no longer inflate
+      `waf_blocked` or add a behaviour penalty.
+- [x] **Catalog cardinality cap.** The PostgreSQL catalog bounds the total number
+      of distinct endpoints (mirroring the Redis inventory cap), so a path-flood
+      through a catch-all route cannot grow `api_endpoints` without limit.
+- [x] **Threat-feed redirect safety.** Feed fetches follow only HTTPS redirects to
+      non-private hosts, closing a blind-SSRF path (redirect to `http://` or an
+      internal address such as cloud metadata).
 
 ### P0 — release blockers
 - [x] **Real console authentication.** Static bearer in `sessionStorage` replaced
