@@ -393,6 +393,24 @@ type AbuseConfig struct {
 	// 168h / 7 days). Keep it long relative to Window so ownership reflects a
 	// durable access pattern, not a single burst.
 	ObjectOwnershipTTL time.Duration `yaml:"object_ownership_ttl"`
+	// OwnerFields upgrades ownership detection from heuristic (first-accessor) to
+	// CONFIRMED: the response body is parsed for one of these JSON fields (checked
+	// top-level and under a "data" wrapper), and its value is the object's true
+	// owner. The owner is compared to the authenticated subject
+	// (X-Gateway-Subject), so configure these to the field(s) that hold the
+	// caller's own id (e.g. "user_id", "owner_id", "account_id"). When a value is
+	// found, it supersedes the first-accessor heuristic for that request. Empty =
+	// heuristic only.
+	OwnerFields []string `yaml:"owner_fields"`
+	// ObjectOwnershipBlock denies a request BEFORE forwarding when the object's
+	// confirmed owner (learned earlier from a response body via OwnerFields) is
+	// known and differs from the caller — preventing the leak instead of only
+	// recording it. Requires OwnerFields to populate owner bindings first.
+	ObjectOwnershipBlock bool `yaml:"object_ownership_block"`
+	// OwnershipBypassRoles are roles allowed to access objects they do not own
+	// (support/admin views); a consumer holding any of them skips ownership
+	// detection and blocking entirely.
+	OwnershipBypassRoles []string `yaml:"ownership_bypass_roles"`
 }
 
 // PrivilegedRule binds a path prefix to the roles allowed to call it.

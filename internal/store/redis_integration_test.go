@@ -145,3 +145,28 @@ func TestRedis_ObjectOwnerTracking(t *testing.T) {
 		t.Fatalf("cross-tenant leak: prior=%d already=%v, want 0/false", prior, already)
 	}
 }
+
+func TestRedis_ObjectOwnerBinding(t *testing.T) {
+	s := testStore(t)
+	acme, globex := ctxFor("acme"), ctxFor("globex")
+	ep, obj := "GET /api/orders/{id}", "12345"
+
+	// Unknown until set.
+	if _, known, err := s.GetObjectOwner(acme, ep, obj); err != nil || known {
+		t.Fatalf("unset owner: known=%v err=%v, want false/nil", known, err)
+	}
+
+	// Bind the confirmed owner (from a response body).
+	if err := s.SetObjectOwner(acme, ep, obj, "alice", time.Hour); err != nil {
+		t.Fatalf("SetObjectOwner: %v", err)
+	}
+	owner, known, err := s.GetObjectOwner(acme, ep, obj)
+	if err != nil || !known || owner != "alice" {
+		t.Fatalf("GetObjectOwner = %q known=%v err=%v, want alice/true", owner, known, err)
+	}
+
+	// Tenant isolation: globex must not see acme's binding.
+	if _, known, _ := s.GetObjectOwner(globex, ep, obj); known {
+		t.Fatal("cross-tenant owner binding leak")
+	}
+}

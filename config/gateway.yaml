@@ -193,12 +193,18 @@ security:
       # - path: "/admin/"
       #   required_roles: ["admin"]
     # Single-object BOLA / IDOR: flags a consumer that SUCCESSFULLY (2xx) reads an
-    # object owned by a different, small set of consumers and never accessed by it
-    # — the one-object leak enumeration cannot catch. Detect-only (needs the
-    # response status to confirm the leak).
+    # object owned by someone else — the one-object leak enumeration cannot catch.
+    # Detect-only (needs the response status to confirm the leak).
     object_ownership: false
     shared_object_threshold: 2    # objects with more distinct owners are treated as shared/public
     object_ownership_ttl: 168h    # how long an object's owner set is remembered (7 days)
+    # owner_fields upgrades detection from heuristic (first-accessor) to CONFIRMED:
+    # the response body is parsed for one of these JSON fields (top-level or under
+    # a "data" wrapper) and its value is the object's true owner, compared to the
+    # authenticated subject. Set these to the field(s) holding the caller's own id.
+    owner_fields: []              # e.g. ["user_id", "owner_id", "account_id"]
+    object_ownership_block: false # deny a KNOWN cross-owner access before forwarding (needs owner_fields)
+    ownership_bypass_roles: []    # roles allowed to see others' objects, e.g. ["admin", "support"]
 
   # Positive-security schema enforcement: validate each request against the
   # documented OpenAPI/Swagger contract (discovery.spec_path) and reject what the

@@ -151,8 +151,13 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       reads an object owned by a different, small set of consumers and never
       accessed by it. Evaluated after the response so a backend 4xx (authorization
       enforced) is correctly NOT flagged — the one-object leak that enumeration and
-      signature WAFs miss. Detect-only or block mode, with an allowlist for known
-      high-cardinality callers and explainable `why` on every event.
+      signature WAFs miss. **Confirmed ownership**: with `owner_fields` set, the
+      object's true owner is read from the response body and compared to the
+      authenticated subject (heuristic warning → confirmed critical), and that
+      binding (`store.SetObjectOwner`/`GetObjectOwner`) lets `object_ownership_block`
+      **deny a known cross-owner access before forwarding** — preventing the leak,
+      not just recording it; `ownership_bypass_roles` exempt support/admin. With an
+      allowlist for known high-cardinality callers and explainable `why` on every event.
 - [~] **SIEM integration** (Splunk / Elastic) and **alerting** (Slack / PagerDuty)
       with configurable webhooks. Done: `alerting` config block (webhook URL,
       `generic`/`slack` payload format, `min_severity` gate); `AEGIS_ALERT_WEBHOOK_URL`

@@ -617,6 +617,32 @@ func (s *Store) TrackObjectOwner(ctx context.Context, endpoint, objectID, consum
 	return priorOwners, alreadyOwned, nil
 }
 
+// SetObjectOwner records the CONFIRMED owner of an object, learned from the
+// response body (an owner field such as user_id). The owner is an intrinsic
+// property of the object, so this is a plain last-writer-wins set with a TTL
+// refresh — every legitimate read re-affirms the same value. It backs proactive
+// cross-owner blocking (GetObjectOwner) and confirmed-IDOR detection.
+func (s *Store) SetObjectOwner(ctx context.Context, endpoint, objectID, owner string, ttl time.Duration) error {
+	if owner == "" {
+		return nil
+	}
+	return s.client.Set(ctx, tkey(ctx, "objowner:"+endpoint+":"+objectID), owner, ttl).Err()
+}
+
+// GetObjectOwner returns the confirmed owner of an object (from a prior response
+// body) and whether one is known. A known owner different from the caller's
+// identity is a cross-owner access that can be blocked BEFORE forwarding.
+func (s *Store) GetObjectOwner(ctx context.Context, endpoint, objectID string) (owner string, known bool, err error) {
+	v, err := s.client.Get(ctx, tkey(ctx, "objowner:"+endpoint+":"+objectID)).Result()
+	if err == redis.Nil {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
 const prefixJTI = "jwt:revoked:"

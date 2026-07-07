@@ -91,6 +91,11 @@ type AbuseStore interface {
 	// had accessed it before (priorOwners) and whether this consumer already had
 	// (alreadyOwned). A small priorOwners with a new consumer is the IDOR signal.
 	TrackObjectOwner(ctx context.Context, endpoint, objectID, consumer string, ttl time.Duration) (priorOwners int64, alreadyOwned bool, err error)
+	// SetObjectOwner records the CONFIRMED owner of an object (learned from the
+	// response body); GetObjectOwner reads it back. A known owner different from
+	// the caller lets the gateway block a cross-owner access before forwarding.
+	SetObjectOwner(ctx context.Context, endpoint, objectID, owner string, ttl time.Duration) error
+	GetObjectOwner(ctx context.Context, endpoint, objectID string) (owner string, known bool, err error)
 }
 
 // SessionValidator validates a console session token, returning the tenant +
