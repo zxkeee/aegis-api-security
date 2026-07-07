@@ -1,0 +1,49 @@
+# AEGIS — IDOR demo config. Fronts the deliberately vulnerable orders backend
+# with JWT auth + object-ownership BOLA detection (confirmed from the response
+# body) and proactive cross-owner blocking. Secrets come from the environment:
+#   AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, AEGIS_JWT_SECRET
+# Plaintext HTTP on purpose (local demo). NEVER use these settings in production.
+
+listen: ":18080"
+admin_listen: ":18081"
+admin_auth: true
+admin_secret: ""              # via AEGIS_ADMIN_SECRET
+admin_cookie_insecure: true
+require_tls: false
+trusted_proxies: []
+
+tls:
+  enabled: false
+
+redis:
+  addr: "127.0.0.1:16380"     # demo redis (docker)
+  password: ""                # via AEGIS_REDIS_PASSWORD
+
+logging:
+  level: "warn"
+  format: "json"
+
+security:
+  # HMAC JWT auth so the gateway derives the verified caller identity (sub) that
+  # ownership detection compares against. Tokens minted by demo/mint-jwt.
+  auth:
+    enabled: true
+    secret: ""                # via AEGIS_JWT_SECRET
+    exclude:
+      - "/health"
+  waf:
+    enabled: false            # keep the demo focused on BOLA, not WAF
+  abuse:
+    enabled: true
+    object_ownership: true          # single-object IDOR detection
+    owner_fields: ["user_id"]       # confirm the object's owner from the response body
+    object_ownership_block: true    # deny a known cross-owner access before forwarding
+    shared_object_threshold: 2
+    object_ownership_ttl: 168h
+
+routes:
+  - path: "/"
+    methods: ["GET", "POST", "PUT", "DELETE"]
+    upstreams:
+      - "http://127.0.0.1:19000"
+    timeout: "15s"
