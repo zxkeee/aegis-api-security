@@ -4,6 +4,8 @@ services:
   #   AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, AEGIS_JWT_SECRET (if auth.enabled)
   gateway:
     build: .
+    # Use the compose-specific config (redis:6379, postgres, http cookie).
+    command: ["--config", "config/gateway.docker.yaml"]
     ports:
       - "8080:8080"                 # Gateway proxy — safe to expose
       # Admin API is bound to localhost only. The admin plane must never face the
@@ -79,6 +81,22 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
+    environment:
+      # The admin secret is the bearer token Prometheus uses to scrape the
+      # gateway's authenticated /metrics endpoint (see prometheus.yml).
+      - AEGIS_ADMIN_SECRET=${AEGIS_ADMIN_SECRET}
+    # Materialise the bearer token from the environment into a file (kept out of
+    # the tracked config), then run Prometheus with its default flags.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s' "$$AEGIS_ADMIN_SECRET" > /etc/prometheus/admin_token
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --web.console.libraries=/usr/share/prometheus/console_libraries \
+          --web.console.templates=/usr/share/prometheus/consoles
     restart: unless-stopped
     networks:
       - aegis
