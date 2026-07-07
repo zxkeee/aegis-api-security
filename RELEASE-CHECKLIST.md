@@ -142,11 +142,17 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       security; without it the product reads as "another WAF". Implemented in
       `middleware.AbuseDetection` (wired after JWT so it sees verified roles):
       **BFLA** flags a consumer hitting a privileged path prefix without any
-      required role; **BOLA/IDOR** flags object-ID enumeration via per-consumer/
-      endpoint distinct-ID counts (`store.TrackObjectAccess`) against both a hard
-      `enum_threshold` ceiling and an adaptive per-consumer EWMA baseline
-      (`store.TrackBaseline`, A2). Detect-only or block mode, with an allowlist
-      for known high-cardinality callers and explainable `why` on every event.
+      required role; **BOLA/IDOR** is caught two ways: (1) **enumeration** via
+      per-consumer/endpoint distinct-ID counts (`store.TrackObjectAccess`) against
+      both a hard `enum_threshold` ceiling and an adaptive per-consumer EWMA
+      baseline (`store.TrackBaseline`, A2); (2) **single-object IDOR**
+      (`object_ownership`) — learns which consumers own which objects
+      (`store.TrackObjectOwner`) and flags a consumer that **successfully (2xx)**
+      reads an object owned by a different, small set of consumers and never
+      accessed by it. Evaluated after the response so a backend 4xx (authorization
+      enforced) is correctly NOT flagged — the one-object leak that enumeration and
+      signature WAFs miss. Detect-only or block mode, with an allowlist for known
+      high-cardinality callers and explainable `why` on every event.
 - [~] **SIEM integration** (Splunk / Elastic) and **alerting** (Slack / PagerDuty)
       with configurable webhooks. Done: `alerting` config block (webhook URL,
       `generic`/`slack` payload format, `min_severity` gate); `AEGIS_ALERT_WEBHOOK_URL`

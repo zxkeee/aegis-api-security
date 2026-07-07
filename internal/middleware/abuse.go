@@ -170,6 +170,54 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 				}
 			}
 
+			// ── BOLA (object ownership): single-object IDOR ────────────────────
+			// The enumeration check above needs MANY IDs to fire; this catches the
+			// one-object case. It is evaluated AFTER the response so a 2xx confirms
+			// the object was actually returned to a consumer it does not belong to
+			// (a 4xx means the backend enforced authorization — not a leak). Because
+			// the decision needs the status, it is detect-only regardless of
+			// BlockMode. Only authenticated subjects qualify: an "ip:" identity is
+			// too unstable (NAT/DHCP) to attribute object ownership.
+			if cfg.ObjectOwnership && subject != "" && len(ids) > 0 {
+				sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+				next.ServeHTTP(sw, r)
+				if sw.status < 200 || sw.status >= 300 {
+					return // backend did not return the object (denied / not found)
+				}
+				shared := cfg.SharedObjectThreshold
+				if shared <= 0 {
+					shared = 2
+				}
+				ownTTL := cfg.ObjectOwnershipTTL
+				if ownTTL <= 0 {
+					ownTTL = 168 * time.Hour
+				}
+				for _, id := range ids {
+					prior, already, err := st.TrackObjectOwner(r.Context(), endpoint, id, consumer, ownTTL)
+					if err != nil {
+						log.Error("abuse: object-owner tracking failed", map[string]any{"error": err.Error()})
+						continue
+					}
+					// Cross-owner successful read: the object had a small set of prior
+					// owners, this consumer was not one of them, and the read returned
+					// 2xx. Higher confidence than enumeration (an actual data leak), so
+					// severity is "critical".
+					if !already && prior >= 1 && int(prior) <= shared {
+						recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
+							"consumer":     consumer,
+							"object_id":    id,
+							"endpoint":     endpoint,
+							"prior_owners": prior,
+							"severity":     "critical",
+							"why": "consumer '" + consumer + "' successfully read object '" + id +
+								"' on '" + endpoint + "' owned by " + strconv.FormatInt(prior, 10) +
+								" other consumer(s) and never accessed by it — possible IDOR (BOLA)",
+						})
+					}
+				}
+				return
+			}
+
 			next.ServeHTTP(w, r)
 		})
 	}

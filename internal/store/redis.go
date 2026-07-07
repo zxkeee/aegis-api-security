@@ -578,6 +578,45 @@ func (s *Store) TrackBaseline(ctx context.Context, consumer, endpoint string, cu
 	return b, nil
 }
 
+// objectOwnerSetCap bounds the per-object owner set so a broadly shared object
+// cannot grow it without limit. An object past the cap is, by definition, not
+// "owned" by a small set and never yields an ownership (IDOR) signal.
+const objectOwnerSetCap = 64
+
+// TrackObjectOwner records that `consumer` accessed the object identified by
+// (endpoint, objectID) and reports the ownership picture BEFORE this access:
+// priorOwners is the number of distinct consumers that had already accessed the
+// object, and alreadyOwned is whether `consumer` was one of them. A small
+// priorOwners with a new consumer is the single-object BOLA / IDOR signal —
+// someone reading an object that belongs to a different, small set of users.
+// The owner set is capped (objectOwnerSetCap) and TTL'd; callers decide what
+// priorOwners count counts as "shared" (and is therefore benign).
+func (s *Store) TrackObjectOwner(ctx context.Context, endpoint, objectID, consumer string, ttl time.Duration) (priorOwners int64, alreadyOwned bool, err error) {
+	key := tkey(ctx, "objown:"+endpoint+":"+objectID)
+	pipe := s.client.Pipeline()
+	member := pipe.SIsMember(ctx, key, consumer)
+	card := pipe.SCard(ctx, key)
+	if _, err = pipe.Exec(ctx); err != nil {
+		return 0, false, err
+	}
+	priorOwners = card.Val()
+	alreadyOwned = member.Val()
+
+	// Record this consumer as an owner (bounded) and refresh the TTL so an object
+	// under active access stays tracked; a stale object expires and is forgotten.
+	if !alreadyOwned && priorOwners < objectOwnerSetCap {
+		wpipe := s.client.Pipeline()
+		wpipe.SAdd(ctx, key, consumer)
+		wpipe.Expire(ctx, key, ttl)
+		if _, werr := wpipe.Exec(ctx); werr != nil {
+			return priorOwners, alreadyOwned, werr
+		}
+	} else {
+		_ = s.client.Expire(ctx, key, ttl).Err()
+	}
+	return priorOwners, alreadyOwned, nil
+}
+
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
 const prefixJTI = "jwt:revoked:"

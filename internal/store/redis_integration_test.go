@@ -111,3 +111,37 @@ func TestRedis_SessionAndForensicIsolated(t *testing.T) {
 		t.Fatalf("acme forensic log should have 1 entry, got %d", len(entries))
 	}
 }
+
+func TestRedis_ObjectOwnerTracking(t *testing.T) {
+	s := testStore(t)
+	ctx := ctxFor("acme")
+	ep, obj := "GET /api/orders/{id}", "12345"
+
+	// First access by alice: no prior owners, not already owned.
+	prior, already, err := s.TrackObjectOwner(ctx, ep, obj, "alice", time.Hour)
+	if err != nil {
+		t.Fatalf("TrackObjectOwner alice#1: %v", err)
+	}
+	if prior != 0 || already {
+		t.Fatalf("alice first access: prior=%d already=%v, want 0/false", prior, already)
+	}
+
+	// Alice re-reads her own object: now she is a known owner.
+	prior, already, _ = s.TrackObjectOwner(ctx, ep, obj, "alice", time.Hour)
+	if prior != 1 || !already {
+		t.Fatalf("alice re-access: prior=%d already=%v, want 1/true", prior, already)
+	}
+
+	// Bob reads alice's object: one prior owner (alice), bob not among them —
+	// the single-object IDOR signal.
+	prior, already, _ = s.TrackObjectOwner(ctx, ep, obj, "bob", time.Hour)
+	if prior != 1 || already {
+		t.Fatalf("bob cross access: prior=%d already=%v, want 1/false", prior, already)
+	}
+
+	// Tenant isolation: globex sees no owners for the same object key.
+	prior, already, _ = s.TrackObjectOwner(ctxFor("globex"), ep, obj, "carol", time.Hour)
+	if prior != 0 || already {
+		t.Fatalf("cross-tenant leak: prior=%d already=%v, want 0/false", prior, already)
+	}
+}

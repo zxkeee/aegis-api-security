@@ -186,12 +186,19 @@ security:
   # identity/roles. Detect-only by default (records events without blocking).
   abuse:
     enabled: false
-    enum_threshold: 50   # distinct object IDs per consumer/endpoint in window -> BOLA
+    enum_threshold: 50   # distinct object IDs per consumer/endpoint in window -> BOLA (enumeration)
     window: 60s
     block_mode: false    # true = deny flagged requests
     privileged: []       # BFLA rules, e.g.:
       # - path: "/admin/"
       #   required_roles: ["admin"]
+    # Single-object BOLA / IDOR: flags a consumer that SUCCESSFULLY (2xx) reads an
+    # object owned by a different, small set of consumers and never accessed by it
+    # — the one-object leak enumeration cannot catch. Detect-only (needs the
+    # response status to confirm the leak).
+    object_ownership: false
+    shared_object_threshold: 2    # objects with more distinct owners are treated as shared/public
+    object_ownership_ttl: 168h    # how long an object's owner set is remembered (7 days)
 
   # Positive-security schema enforcement: validate each request against the
   # documented OpenAPI/Swagger contract (discovery.spec_path) and reject what the

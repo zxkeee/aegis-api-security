@@ -374,6 +374,25 @@ type AbuseConfig struct {
 	// fires, so a tiny baseline (e.g. 0.5) cannot flag a benign handful of objects
 	// (default 8).
 	AdaptiveMinObjects int `yaml:"adaptive_min_objects"`
+	// ObjectOwnership enables single-object BOLA / IDOR detection. Enumeration
+	// detection only catches a consumer sweeping MANY object IDs; this catches a
+	// consumer that reads ONE object belonging to someone else — the classic IDOR
+	// a signature WAF cannot see. It learns which consumers access which objects
+	// and flags a consumer that SUCCESSFULLY (2xx) reads an object previously
+	// owned by a different, small set of consumers and never accessed by it. It is
+	// evaluated AFTER the response (so a 2xx confirms the object was actually
+	// returned to the wrong caller) and is therefore detect-only, regardless of
+	// BlockMode. Only applies to authenticated subjects (anonymous ip:-identities
+	// are too noisy to attribute ownership).
+	ObjectOwnership bool `yaml:"object_ownership"`
+	// SharedObjectThreshold bounds ownership detection to genuinely owned objects:
+	// an object already accessed by MORE than this many distinct consumers is
+	// treated as shared/public and never flagged (default 2). Lower is stricter.
+	SharedObjectThreshold int `yaml:"shared_object_threshold"`
+	// ObjectOwnershipTTL is how long an object's owner set is retained (default
+	// 168h / 7 days). Keep it long relative to Window so ownership reflects a
+	// durable access pattern, not a single burst.
+	ObjectOwnershipTTL time.Duration `yaml:"object_ownership_ttl"`
 }
 
 // PrivilegedRule binds a path prefix to the roles allowed to call it.
