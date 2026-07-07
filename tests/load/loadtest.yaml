@@ -1,0 +1,68 @@
+# AEGIS — load / graceful-degradation stand config (local + on-hardware).
+#
+# Boots a gateway with the Redis- and PostgreSQL-dependent controls in the hot
+# path so the outage and drain load generators exercise them realistically:
+#   - rate_limit + ip_guard  -> Redis (fail-open by default)
+#   - discovery/api_inventory -> PostgreSQL catalog (async worker)
+#   - forensic sink           -> PostgreSQL (batched, Redis ring-buffer fallback)
+#
+# Rate limit is set intentionally high so steady load is NOT throttled — these
+# runs measure degradation under failure, not the limiter. Secrets come from the
+# environment, never this file:
+#   AEGIS_ADMIN_SECRET    strong admin secret (config.Validate rejects placeholders)
+#   AEGIS_REDIS_PASSWORD  redis password
+#   AEGIS_FORENSIC_DSN    postgres DSN (enables catalog + forensic)
+#
+# Plaintext on purpose (no TLS in the load stand). NEVER use in production.
+
+listen: ":18080"
+admin_listen: ":18081"
+admin_auth: true
+admin_secret: ""              # via AEGIS_ADMIN_SECRET
+admin_cookie_insecure: true   # stand is plain HTTP
+require_tls: false
+trusted_proxies: []
+shutdown_drain: 6s            # lame-duck grace: /readyz -> 503, keep serving, then stop
+
+tls:
+  enabled: false
+
+redis:
+  addr: "127.0.0.1:16379"
+  password: ""                # via AEGIS_REDIS_PASSWORD
+
+logging:
+  level: "warn"               # suppress per-request api_access noise under load
+  format: "json"
+
+security:
+  rate_limit:
+    enabled: true             # Redis in the hot path, but cap is high so load passes
+    requests: 1000000
+    window: 60s
+    burst_limit: 1000000
+  waf:
+    enabled: true
+    block_mode: true
+  bot:
+    enabled: false            # don't flag the load client's UA
+  dlp:
+    enabled: true
+  ip_guard:
+    enabled: true             # Redis in the hot path (fail-open default)
+  cors:
+    enabled: false
+  api_inventory:
+    enabled: true             # drives the PG-backed discovery catalog
+
+# forensic_dsn supplied via AEGIS_FORENSIC_DSN -> enables catalog + forensic sink.
+
+routes:
+  - path: "/"
+    methods: ["GET", "POST", "PUT", "DELETE"]
+    upstreams:
+      - "http://127.0.0.1:13000"
+    load_balance: "round_robin"
+    timeout: "15s"
+    retry_attempts: 1
+    strip_prefix: false

@@ -240,10 +240,20 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       (fail-open) with **p99 864 ms / max 1.30 s** — bounded by the fail-fast
       Redis timeouts (dial 1s / read-write 500ms / 1 retry), vs the 3–9 s hangs
       the go-redis defaults would cause; latency snapped back to p99 42 ms on
-      recovery. PostgreSQL-unavailable is partially covered (catalog → 503,
-      `catalog_nil_test.go`; forensic falls back to the Redis ring buffer).
-      Still to do: capacity sweep for published max-RPS, PG-outage-under-load,
-      and a rolling-update drain (zero-5xx during `Shutdown`).
+      recovery. **PostgreSQL-outage under load** now covered on a live stand
+      (`tests/load/reliability-results-2026-07-08.md`): at 100 rps with PG killed
+      mid-run the data plane held **100% success with flat latency** (p99 11 ms
+      through the outage) — the async catalog/forensic path is decoupled from
+      proxied traffic; the admin catalog read degrades and self-recovers. **Rolling
+      -update drain** covered in the same run: **zero 5xx** during `Shutdown`, and
+      a new lame-duck grace (`shutdown_drain`: `/readyz` → 503 → serve → drain →
+      stop) turns a post-SIGTERM burst of connection errors into zero-downtime
+      rollouts behind a readiness-gated LB (601/1200 drain-window requests now
+      succeed vs 0 before). Regression: `internal/api` readyz-draining tests.
+      Admin read handlers now return **503** (not 500) when the backing store is
+      unreachable, so clients/LBs back off correctly (`storeUnavailable`
+      classifier, `TestStoreUnavailable_Classifies`). Still to do: capacity sweep
+      for published max-RPS (needs dedicated hardware, not Docker Desktop).
 
 ### P1
 - [x] High-availability guide (`docs/runbooks/ha.md`): topology (Sentinel + PG
