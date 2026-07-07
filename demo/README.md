@@ -17,15 +17,17 @@ touches nothing in your environment except a short-lived Redis container.
 
 ## What the audience sees
 
-The stand is a deliberately **vulnerable orders API** (order `1001` belongs to
-`alice`) behind AEGIS. `alice` and `bob` are authenticated with real HS256 JWTs.
+The stand is a deliberately **vulnerable orders API** (order `1001` is owned by
+user id `7` = alice) behind AEGIS. `alice` and `bob` hold real HS256 JWTs whose
+subject is an **email** and whose owner id is a numeric **`uid`** claim (7 and 9)
+— the realistic case where the resource owner is not the subject.
 
 | Step | What happens | The point |
 |---|---|---|
-| ① Attack | `bob` requests `GET /api/orders/1001` (alice's) → backend returns **200** and the body `user_id: alice` | The app has an IDOR: it hands any order to any logged-in user. |
-| ② Detect | AEGIS read the response and recorded a **confirmed, critical** `bola_object_ownership` finding | The owner is taken from the **response body** (`user_id`), compared to the verified caller (`bob`) — a confirmed leak, not a heuristic guess. This is what a WAF can't see. |
-| ③ Prevent | `bob` retries → **403**, denied at the gateway before it reaches the app | Once AEGIS knows `alice` owns `1001`, every cross-owner attempt is blocked up front. |
-| ④ No collateral | `alice` reads her own `1001` → **200** | The real owner is untouched. |
+| ① Attack | `bob` (uid 9) requests `GET /api/orders/1001` (owned by uid 7) → backend returns **200** and the body `user_id: 7` | The app has an IDOR: it hands any order to any logged-in user. |
+| ② Detect | AEGIS read the response and recorded a **confirmed, critical** `bola_object_ownership` finding | The owner (`user_id: 7`) is read from the **response body** and compared to the caller's real id (`uid: 9`, via `auth.identity_claim`) — a confirmed leak, not a heuristic guess, and not fooled by the email subject. This is what a WAF can't see. |
+| ③ Prevent | `bob` retries → **403**, denied at the gateway before it reaches the app | Once AEGIS knows uid 7 owns `1001`, every cross-owner attempt is blocked up front. |
+| ④ No collateral | `alice` (uid 7) reads her own `1001` → **200** | The real owner is untouched. |
 
 ## How to present it (to security engineers)
 
@@ -38,9 +40,10 @@ The stand is a deliberately **vulnerable orders API** (order `1001` belongs to
 3. Invite them to poke: change the config (`demo/gateway.demo-idor.yaml`), flip
    `object_ownership_block` off to show detect-only, or point `owner_fields` at a
    different field.
-4. Be honest about the edge (they'll ask): the owner field value must be
-   comparable to the JWT subject; different id-spaces need a claim mapping (next
-   on the roadmap). Say it before they find it.
+4. Pre-empt the obvious objection: "real JWTs carry an email/UUID subject, not
+   the user id." This demo already models that — the token's `sub` is an email
+   and the owner id is a numeric `uid` claim, wired via `auth.identity_claim: uid`
+   so the gateway compares the right identities. Point it out; it lands well.
 
 ## How it works
 

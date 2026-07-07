@@ -192,6 +192,14 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 				if ownTTL <= 0 {
 					ownTTL = 168 * time.Hour
 				}
+				// The identity compared against the object's owner. Prefer the
+				// propagated ownership claim (X-Gateway-Identity, set by JWT auth from
+				// auth.identity_claim) so ownership works when the resource owner is not
+				// the JWT subject; fall back to the subject when no claim is configured.
+				identity := r.Header.Get("X-Gateway-Identity")
+				if identity == "" {
+					identity = subject
+				}
 
 				// Proactive block (before forwarding): if an object's confirmed owner
 				// is already known and is someone else, deny the leak up front.
@@ -202,7 +210,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 							log.Error("abuse: object-owner lookup failed", map[string]any{"error": err.Error()})
 							continue
 						}
-						if known && owner != "" && owner != subject {
+						if known && owner != "" && owner != identity {
 							SecurityDeny(w, r, log, st, "bola_owner_block", ip, http.StatusForbidden, map[string]any{
 								"consumer":  consumer,
 								"object_id": id,
@@ -245,7 +253,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 					if err := st.SetObjectOwner(r.Context(), endpoint, objID, bodyOwner, ownTTL); err != nil {
 						log.Error("abuse: set object-owner failed", map[string]any{"error": err.Error()})
 					}
-					if bodyOwner != subject {
+					if bodyOwner != identity {
 						recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
 							"consumer":  consumer,
 							"object_id": objID,

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -245,6 +246,16 @@ func (ja *JWTAuth) Middleware() Middleware {
 				r.Header.Set("X-Gateway-Scopes", scopeStr)
 			}
 
+			// Propagate a configurable ownership-identity claim (X-Gateway-Identity)
+			// so BOLA ownership detection can compare the resource owner in a
+			// response body against the caller's real id even when it is not `sub`.
+			// CleanHeaders strips any inbound X-Gateway-* so this cannot be forged.
+			if ja.cfg.IdentityClaim != "" {
+				if id := claimToString(claims[ja.cfg.IdentityClaim]); id != "" {
+					r.Header.Set("X-Gateway-Identity", id)
+				}
+			}
+
 			// Identity-propagation signing key. Prefer the dedicated
 			// propagation_secret (works for both JWKS and HMAC token verification
 			// modes); fall back to the HMAC token secret for backward
@@ -288,3 +299,18 @@ func (ja *JWTAuth) Middleware() Middleware {
 type contextKey string
 
 const ctxKeySubject contextKey = "gateway.subject"
+
+// claimToString renders a JWT claim value as a string for identity comparison.
+// JSON numbers arrive as float64 from MapClaims; format them without a trailing
+// ".000000" so a numeric id like 42 compares cleanly against a body field.
+func claimToString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(t)
+	}
+	return ""
+}

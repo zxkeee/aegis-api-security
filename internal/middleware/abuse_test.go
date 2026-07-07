@@ -147,6 +147,60 @@ func TestBOLAOwnership_BlockAllowsRealOwner(t *testing.T) {
 	}
 }
 
+// runAbuseBodyID adds a propagated X-Gateway-Identity (the ownership claim), so
+// ownership comparison against a non-subject identity can be exercised.
+func runAbuseBodyID(cfg config.AbuseConfig, st Store, path, subject, identity, roles string, status int, body string) *httptest.ResponseRecorder {
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	})
+	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.RemoteAddr = "1.2.3.4:1"
+	if subject != "" {
+		r.Header.Set("X-Gateway-Subject", subject)
+	}
+	if identity != "" {
+		r.Header.Set("X-Gateway-Identity", identity)
+	}
+	if roles != "" {
+		r.Header.Set("X-Gateway-Roles", roles)
+	}
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// Ownership compares against the propagated identity claim, NOT the subject: the
+// caller's sub is an email but its id (identity) is 42, and it reads its own
+// object (user_id=42) — must not flag even though sub != user_id.
+func TestBOLAOwnership_IdentityClaimOwnerMatch(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user_id"}
+	st := &fakeStore{}
+	_ = runAbuseBodyID(cfg, st, "/api/orders/1", "bob@example.com", "42", "user", http.StatusOK, `{"user_id":"42"}`)
+	if len(st.forensic) != 0 {
+		t.Fatalf("owner-by-identity must not flag, got %+v", st.forensic)
+	}
+	if len(st.setOwners) != 1 || st.setOwners[0] != "42" {
+		t.Fatalf("owner binding = %v, want [42]", st.setOwners)
+	}
+}
+
+// Same setup, but the object belongs to 42 while the caller's identity is 43 — a
+// confirmed IDOR, decided against the identity claim (not the email subject).
+func TestBOLAOwnership_IdentityClaimCrossOwner(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user_id"}
+	st := &fakeStore{}
+	_ = runAbuseBodyID(cfg, st, "/api/orders/1", "carol@example.com", "43", "user", http.StatusOK, `{"user_id":"42"}`)
+	if len(st.forensic) != 1 || st.forensic[0].Extra["severity"] != "critical" {
+		t.Fatalf("cross-owner by identity must flag critical, got %+v", st.forensic)
+	}
+}
+
 // A bypass role (support/admin) is allowed to see others' objects.
 func TestBOLAOwnership_BypassRoleSkips(t *testing.T) {
 	cfg := ownershipCfg()

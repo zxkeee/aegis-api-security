@@ -264,6 +264,14 @@ type AuthConfig struct {
 	// deployments where a backing-store outage must not let a revoked token slip
 	// through. Mirrors the per-control fail_closed convention used elsewhere.
 	RevocationFailClosed bool `yaml:"revocation_fail_closed"`
+	// IdentityClaim names an additional JWT claim to propagate as the caller's
+	// object-ownership identity (header X-Gateway-Identity), for BOLA ownership
+	// detection when the resource owner in the response body is NOT the JWT
+	// subject. Example: tokens carry sub=<email> but resources are owned by a
+	// numeric user id in claim "uid" and field "user_id" — set identity_claim:
+	// "uid" and abuse.owner_fields: ["user_id"] so the two compare. When unset,
+	// ownership compares against sub.
+	IdentityClaim string `yaml:"identity_claim"`
 }
 
 type WAFConfig struct {

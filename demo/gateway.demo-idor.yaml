@@ -29,6 +29,7 @@ security:
   auth:
     enabled: true
     secret: ""                # via AEGIS_JWT_SECRET
+    identity_claim: "uid"     # the caller's owner id lives in claim "uid", not sub (an email)
     exclude:
       - "/health"
   waf:

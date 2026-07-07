@@ -46,7 +46,11 @@ export AEGIS_ADMIN_SECRET="$(openssl rand -hex 32)"
 export AEGIS_REDIS_PASSWORD="$(openssl rand -hex 16)"
 export AEGIS_JWT_SECRET="$(openssl rand -hex 32)"
 
+# Pre-flight: clear a stale demo gateway from an earlier aborted run (it would
+# hold :18080 with a different JWT secret and 401 the new tokens).
+pkill -f "gateway --config demo/gateway.demo-idor.yaml" >/dev/null 2>&1 || true
 docker rm -f "$REDIS_NAME" >/dev/null 2>&1 || true
+sleep 1
 docker run -d --rm --name "$REDIS_NAME" -p 16380:6379 redis:7-alpine \
   redis-server --requirepass "$AEGIS_REDIS_PASSWORD" >/dev/null
 
@@ -60,10 +64,12 @@ disown "$BE_PID" "$GW_PID" 2>/dev/null || true  # keep job-control chatter out o
 
 for i in $(seq 1 30); do curl -fsS -o /dev/null "$ADMIN/health" 2>/dev/null && break; sleep 1; done
 
-ALICE="$("$BIN/mint" -secret "$AEGIS_JWT_SECRET" -sub alice -roles user)"
-BOB="$(  "$BIN/mint" -secret "$AEGIS_JWT_SECRET" -sub bob   -roles user)"
-echo -e "${C_OK}stand up.${NC} alice + bob authenticated with real JWTs.\n"
-echo -e "${C_DIM}Backend: order 1001 belongs to alice. It returns any order to any"
+ALICE="$("$BIN/mint" -secret "$AEGIS_JWT_SECRET" -sub alice@corp.com -uid 7 -roles user)"
+BOB="$(  "$BIN/mint" -secret "$AEGIS_JWT_SECRET" -sub bob@corp.com   -uid 9 -roles user)"
+echo -e "${C_OK}stand up.${NC} alice (uid 7) + bob (uid 9) authenticated with real JWTs.\n"
+echo -e "${C_DIM}Note: the JWT subject is an email; the owner id is a numeric 'uid' claim —"
+echo -e "the realistic case where the resource owner is NOT the subject."
+echo -e "Backend: order 1001 belongs to uid 7 (alice). It returns any order to any"
 echo -e "logged-in user — a textbook IDOR. AEGIS is in front on :18080.${NC}"
 pause
 
@@ -72,7 +78,7 @@ hdr "① Attack: bob (logged in) requests alice's order /api/orders/1001"
 CODE=$(curl -s -o /tmp/idor_body -w '%{http_code}' -H "Authorization: Bearer $BOB" "$GW/api/orders/1001")
 echo -e "   backend response: ${C_BAD}HTTP $CODE${NC}  ${C_DIM}(the vulnerable app leaked it)${NC}"
 cat /tmp/idor_body | pretty | sed 's/^/   /'
-echo -e "   ${C_Y}↑ the body says user_id=alice, but the caller is bob.${NC}"
+echo -e "   ${C_Y}↑ the body says user_id=7 (alice), but the caller's uid is 9 (bob).${NC}"
 pause
 
 # ── Step 2: AEGIS caught it — confirmed IDOR finding ──────────────────────────

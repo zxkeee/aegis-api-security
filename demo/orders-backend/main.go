@@ -17,8 +17,10 @@ func main() {
 	addr := flag.String("addr", ":19000", "listen address")
 	flag.Parse()
 
-	// Pre-seeded orders: 1001 belongs to alice, 1002 to bob.
-	owners := map[string]string{"1001": "alice", "1002": "bob"}
+	// Pre-seeded orders keyed by order id -> owner's numeric user id. Order 1001
+	// belongs to user 7 (alice), 1002 to user 9 (bob). The owner is a numeric id,
+	// deliberately unlike the JWT subject (an email) — the realistic case.
+	owners := map[string]string{"1001": "7", "1002": "9"}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
