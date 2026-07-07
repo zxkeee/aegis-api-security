@@ -2,11 +2,15 @@ package api
 
 import (
 	"crypto/subtle"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"api-gateway/internal/alert"
@@ -36,6 +40,10 @@ type handlers struct {
 	// oidc is the SSO authenticator; nil when oidc is disabled or discovery
 	// failed at startup. Behind an interface so the callback flow is testable.
 	oidc OIDCAuthenticator
+	// draining reflects lame-duck shutdown state; when set, readyz reports 503 so
+	// upstreams drain the gateway before it stops accepting connections. May be
+	// nil in unit tests that construct handlers directly.
+	draining *atomic.Bool
 }
 
 // requireAuth is a defence-in-depth check called directly inside mutating
@@ -90,6 +98,47 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// storeUnavailable reports whether err means the backing store (PostgreSQL or
+// Redis) is unreachable, as opposed to a genuine query/logic error. A dependency
+// outage should surface as 503 (retryable) rather than 500 (reads as a bug); a
+// load balancer / client backs off on 503 but not on 500.
+func storeUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, driver.ErrBadConn) || errors.Is(err, sql.ErrConnDone) {
+		return true
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	for _, sub := range []string{
+		"connection refused", "connection reset", "no such host",
+		"dial tcp", "broken pipe", "server closed the connection",
+		"the database system is", "cannot connect", "i/o timeout",
+		"connection timed out", "bad connection", "no connection",
+	} {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// writeStoreError logs the internal error and picks the right status: 503 when
+// the backing store is unreachable (retryable), else 500. The public message is
+// unchanged; only the code varies so clients/LBs get the correct retry signal.
+func (h *handlers) writeStoreError(w http.ResponseWriter, logMsg, publicMsg string, err error) {
+	h.log.Error(logMsg, map[string]any{"error": err.Error()})
+	if storeUnavailable(err) {
+		writeError(w, http.StatusServiceUnavailable, publicMsg+" (backing store unavailable, retry shortly)")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, publicMsg)
+}
+
 // decodeJSON decodes a JSON body with a size limit.
 // FIX SEC-4: Prevents OOM via oversized request bodies.
 func decodeJSON(r *http.Request, v any) error {
@@ -112,6 +161,15 @@ func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
 
 // ARCH-11: Readiness probe — checks Redis connectivity
 func (h *handlers) readyz(w http.ResponseWriter, r *http.Request) {
+	// Lame-duck: once shutdown starts, report not-ready so a load balancer stops
+	// routing new traffic while in-flight requests drain on existing connections.
+	if h.draining != nil && h.draining.Load() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "not_ready",
+			"error":  "draining",
+		})
+		return
+	}
 	if err := h.store.Ping(r.Context()); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"status": "not_ready",
@@ -130,8 +188,7 @@ func (h *handlers) readyz(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
 	metrics, err := h.store.GetMetrics(r.Context())
 	if err != nil {
-		h.log.Error("admin: metrics fetch failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch metrics")
+		h.writeStoreError(w, "admin: metrics fetch failed", "failed to fetch metrics", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, metrics)
@@ -174,8 +231,7 @@ func (h *handlers) getRoutes(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) getBlockLog(w http.ResponseWriter, r *http.Request) {
 	entries, err := h.store.GetForensicLog(r.Context(), 100)
 	if err != nil {
-		h.log.Error("admin: block log fetch failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch block log")
+		h.writeStoreError(w, "admin: block log fetch failed", "failed to fetch block log", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
@@ -186,8 +242,7 @@ func (h *handlers) getBlockLog(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) getInventory(w http.ResponseWriter, r *http.Request) {
 	endpoints, err := h.store.GetInventory(r.Context())
 	if err != nil {
-		h.log.Error("admin: inventory fetch failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch inventory")
+		h.writeStoreError(w, "admin: inventory fetch failed", "failed to fetch inventory", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -201,8 +256,7 @@ func (h *handlers) getInventory(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) getBlockedIPs(w http.ResponseWriter, r *http.Request) {
 	ips, err := h.store.GetBlockedIPs(r.Context())
 	if err != nil {
-		h.log.Error("admin: blocked IPs fetch failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch blocked IPs")
+		h.writeStoreError(w, "admin: blocked IPs fetch failed", "failed to fetch blocked IPs", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ips": ips, "count": len(ips)})

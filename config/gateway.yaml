@@ -31,6 +31,13 @@ admin_cookie_insecure: false
 # in production; leave false only when a trusted upstream terminates TLS.
 require_tls: false
 
+# shutdown_drain is the lame-duck grace on SIGTERM: /readyz flips to 503 (so the
+# load balancer / k8s readiness probe drains this instance) while established
+# connections keep being served, then in-flight requests finish and the gateway
+# stops. Set it a few seconds above your LB's readiness probe period so rolling
+# updates cause zero connection errors. 0 shuts down immediately (no grace).
+shutdown_drain: 5s
+
 # Trusted reverse-proxy IPs or CIDRs.
 # Only connections from these addresses will have X-Forwarded-For trusted.
 # List the EXACT IPs of your load balancers / ingress nodes — broad private

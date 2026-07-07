@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sync/atomic"
 
 	"api-gateway/internal/alert"
 	"api-gateway/internal/audit"
@@ -25,7 +26,15 @@ type Server struct {
 	users   *iam.Store
 	audit   *audit.Store
 	oidc    OIDCAuthenticator
+	// draining is set on shutdown so /readyz reports 503 (lame-duck) while the
+	// gateway is still serving established connections — see cmd/gateway drain grace.
+	draining atomic.Bool
 }
+
+// SetDraining flips the readiness state. When true, /readyz returns 503 so a
+// load balancer / k8s readiness probe stops routing new traffic before the
+// gateway actually stops accepting connections.
+func (s *Server) SetDraining(v bool) { s.draining.Store(v) }
 
 // NewServer creates a new admin API server. users / auditStore may be nil if
 // forensic_dsn is unset — in that case only the legacy bearer/secret login is
@@ -49,7 +58,7 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users, audit: s.audit, oidc: s.oidc}
+	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users, audit: s.audit, oidc: s.oidc, draining: &s.draining}
 	// Assign the spec interface only for a real catalog, so a nil *discovery.
 	// Catalog does not become a non-nil interface holding a typed-nil pointer.
 	if s.catalog != nil {

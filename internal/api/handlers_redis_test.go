@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"api-gateway/internal/config"
@@ -54,6 +55,60 @@ func TestReadyz_RedisDown(t *testing.T) {
 	rec, body := doReq(h.readyz, http.MethodGet, "/readyz", context.Background(), nil)
 	if rec.Code != http.StatusServiceUnavailable || body["status"] != "not_ready" {
 		t.Fatalf("readyz down = %d %v", rec.Code, body)
+	}
+}
+
+// TestReadyz_DrainingWinsOverHealthyRedis proves the lame-duck path: once the
+// server is draining, /readyz reports 503 even though Redis is fully up, so an
+// upstream load balancer removes the instance before the listener closes.
+func TestReadyz_DrainingWinsOverHealthyRedis(t *testing.T) {
+	h, _ := redisHandlers(t)
+	var draining atomic.Bool
+	h.draining = &draining
+
+	// Not draining yet: Redis is up, so ready.
+	rec, body := doReq(h.readyz, http.MethodGet, "/readyz", context.Background(), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pre-drain readyz = %d %v", rec.Code, body)
+	}
+
+	// Begin draining: readyz must flip to 503 not_ready with the drain reason,
+	// even though Redis is still reachable.
+	draining.Store(true)
+	rec, body = doReq(h.readyz, http.MethodGet, "/readyz", context.Background(), nil)
+	if rec.Code != http.StatusServiceUnavailable || body["status"] != "not_ready" || body["error"] != "draining" {
+		t.Fatalf("draining readyz = %d %v (want 503 not_ready/draining)", rec.Code, body)
+	}
+}
+
+// TestServer_SetDrainingWiresToReadyz exercises the full wiring: SetDraining on
+// the Server flips the flag the readyz handler reads through the shared pointer.
+func TestServer_SetDrainingWiresToReadyz(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	t.Cleanup(mr.Close)
+	st, err := store.New(mr.Addr(), "", 0)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	s := &Server{mux: http.NewServeMux(), store: st, log: logger.New("error")}
+	s.registerRoutes()
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pre-drain /readyz = %d", rec.Code)
+	}
+
+	s.SetDraining(true)
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("draining /readyz = %d (want 503)", rec.Code)
 	}
 }
 

@@ -59,6 +59,14 @@ type GatewayConfig struct {
 	// differ from the data-plane API origins — sharing one list would otherwise
 	// let every customer web-app origin make credentialed admin-API requests.
 	AdminCORS *CORSConfig `yaml:"admin_cors"`
+	// ShutdownDrain is the lame-duck grace period on SIGTERM/SIGINT: the gateway
+	// first flips /readyz to 503 (so a load balancer / k8s readiness probe stops
+	// routing new traffic), waits this long while still serving established
+	// connections, and only then drains in-flight requests and stops. 0 (default)
+	// skips the grace and shuts down immediately — set a few seconds in production
+	// so rolling updates cause zero connection errors. Must exceed the LB's
+	// readiness probe period.
+	ShutdownDrain time.Duration `yaml:"shutdown_drain"`
 	// RequireTLS makes startup fail unless TLS is terminated at the gateway
 	// (tls.enabled). Set it in production. Leave false only when TLS is terminated
 	// by a trusted upstream (ingress / load balancer) in front of AEGIS.
@@ -517,6 +525,9 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 // Validate returns an error if the configuration is unsafe to run in production.
 // Call this after Load() before starting any servers.
 func Validate(cfg GatewayConfig) error {
+	if cfg.ShutdownDrain < 0 {
+		return errors.New("shutdown_drain must not be negative")
+	}
 	if err := validateAdminSecret(cfg); err != nil {
 		return err
 	}
