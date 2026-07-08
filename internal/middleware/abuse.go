@@ -115,7 +115,10 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 			}
 
 			// ── BOLA: object-ID enumeration by one consumer ────────────────────
-			endpoint, ids := bolaTarget(r.Method, r.URL.Path)
+			// endpoint (method-specific) drives enumeration; scope (method-
+			// independent) drives ownership so a read-learned owner also protects
+			// against a cross-owner write.
+			endpoint, scope, ids := bolaTarget(r.Method, r.URL.Path)
 			if len(ids) > 0 {
 				var maxCount int64
 				for _, id := range ids {
@@ -205,7 +208,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 				// is already known and is someone else, deny the leak up front.
 				if cfg.ObjectOwnershipBlock {
 					for _, id := range ids {
-						owner, known, err := st.GetObjectOwner(r.Context(), endpoint, id)
+						owner, known, err := st.GetObjectOwner(r.Context(), scope, id)
 						if err != nil {
 							log.Error("abuse: object-owner lookup failed", map[string]any{"error": err.Error()})
 							continue
@@ -217,8 +220,8 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 								"endpoint":  endpoint,
 								"owner":     owner,
 								"severity":  "critical",
-								"why": "consumer '" + consumer + "' denied object '" + id + "' on '" + endpoint +
-									"' owned by '" + owner + "' — cross-owner access (BOLA) blocked before forwarding",
+								"why": "consumer '" + consumer + "' denied " + r.Method + " on object '" + id + "' (" + scope +
+									") owned by '" + owner + "' — cross-owner access (BOLA) blocked before forwarding",
 							})
 							return
 						}
@@ -250,7 +253,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 					// it (so future cross-owner requests are blocked) and, if it is not
 					// the caller, flag a confirmed IDOR — a real data leak, "critical".
 					objID := ids[len(ids)-1]
-					if err := st.SetObjectOwner(r.Context(), endpoint, objID, bodyOwner, ownTTL); err != nil {
+					if err := st.SetObjectOwner(r.Context(), scope, objID, bodyOwner, ownTTL); err != nil {
 						log.Error("abuse: set object-owner failed", map[string]any{"error": err.Error()})
 					}
 					if bodyOwner != identity {
@@ -261,8 +264,8 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 							"owner":     bodyOwner,
 							"confirmed": true,
 							"severity":  "critical",
-							"why": "consumer '" + consumer + "' received object '" + objID + "' on '" + endpoint +
-								"' owned by '" + bodyOwner + "' (from response body) — confirmed IDOR (BOLA)",
+							"why": "consumer '" + consumer + "' " + r.Method + " object '" + objID + "' (" + scope +
+								") owned by '" + bodyOwner + "' (from response body) — confirmed IDOR (BOLA)",
 						})
 					}
 					return
@@ -274,7 +277,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 					shared = 2
 				}
 				for _, id := range ids {
-					prior, already, err := st.TrackObjectOwner(r.Context(), endpoint, id, consumer, ownTTL)
+					prior, already, err := st.TrackObjectOwner(r.Context(), scope, id, consumer, ownTTL)
 					if err != nil {
 						log.Error("abuse: object-owner tracking failed", map[string]any{"error": err.Error()})
 						continue
@@ -286,8 +289,8 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 							"endpoint":     endpoint,
 							"prior_owners": prior,
 							"severity":     "warning",
-							"why": "consumer '" + consumer + "' read object '" + id + "' on '" + endpoint +
-								"' owned by " + strconv.FormatInt(prior, 10) +
+							"why": "consumer '" + consumer + "' " + r.Method + " object '" + id + "' (" + scope +
+								") owned by " + strconv.FormatInt(prior, 10) +
 								" other consumer(s) and never accessed by it — possible IDOR (BOLA, heuristic)",
 						})
 					}
@@ -442,8 +445,13 @@ func hasAnyRole(have, required []string) bool {
 	return false
 }
 
-// bolaTarget resolves the BOLA tracking key for a request: the endpoint
-// ("METHOD /template") and the concrete object IDs accessed.
+// bolaTarget resolves the BOLA keys for a request: the method-specific endpoint
+// ("METHOD /template", used for enumeration), the method-INDEPENDENT object scope
+// ("/template", used for ownership), and the concrete object IDs accessed.
+//
+// The object scope omits the method on purpose: order 1001 is the same object
+// whether it is read (GET), modified (PUT/PATCH) or deleted (DELETE), so
+// ownership learned from a read must also protect it against a cross-owner write.
 //
 // Primary case: the normalized template already has "{id}" segments (numeric,
 // UUID, hash, opaque) — those are the object IDs.
@@ -454,10 +462,10 @@ func hasAnyRole(have, required []string) bool {
 // string identifiers evades BOLA entirely, since each value would otherwise look
 // like a distinct static endpoint. False positives are bounded by enum_threshold
 // (default 50), the per-consumer adaptive baseline, and the allowlist.
-func bolaTarget(method, rawPath string) (endpoint string, ids []string) {
+func bolaTarget(method, rawPath string) (endpoint, scope string, ids []string) {
 	tmpl := discovery.NormalizePath(rawPath)
 	if got := extractObjectIDs(rawPath, tmpl); len(got) > 0 {
-		return method + " " + tmpl, got
+		return method + " " + tmpl, tmpl, got
 	}
 	segs := strings.Split(strings.Trim(rawPath, "/"), "/")
 	if len(segs) >= 2 {
@@ -467,10 +475,11 @@ func bolaTarget(method, rawPath string) (endpoint string, ids []string) {
 			if parent == "/" {
 				parent = ""
 			}
-			return method + " " + parent + "/{id}", []string{last}
+			scope = parent + "/{id}"
+			return method + " " + scope, scope, []string{last}
 		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 // extractObjectIDs returns the concrete values of the dynamic ("{id}") segments

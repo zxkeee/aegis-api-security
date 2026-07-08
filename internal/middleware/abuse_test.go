@@ -201,6 +201,35 @@ func TestBOLAOwnership_IdentityClaimCrossOwner(t *testing.T) {
 	}
 }
 
+// Ownership is method-independent: an owner learned from a GET read must protect
+// the same object against a cross-owner WRITE (PUT/DELETE), which is more
+// dangerous (tampering/deletion) than a read.
+func TestBOLAOwnership_ReadLearnedOwnerBlocksWrite(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user_id"}
+	cfg.ObjectOwnershipBlock = true
+	st := &fakeStore{}
+
+	// 1. alice reads her own order via GET → owner bound from the body under the
+	//    method-independent scope "/api/orders/{id}".
+	if rec := runAbuseBody(cfg, st, "/api/orders/1001", "alice", "user", http.StatusOK, `{"user_id":"alice"}`); rec.Code != http.StatusOK {
+		t.Fatalf("owner GET should pass: got %d", rec.Code)
+	}
+
+	// 2. bob tries to modify the same object via PUT — never PUT before — and is
+	//    blocked by the ownership learned from the read.
+	rec := runAbuseStatus(cfg, st, http.MethodPut, "/api/orders/1001", "bob", "user", http.StatusOK)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-owner PUT: got %d, want 403 (read-learned ownership must cover writes)", rec.Code)
+	}
+
+	// 3. the real owner may still modify it via PUT.
+	rec = runAbuseStatus(cfg, st, http.MethodPut, "/api/orders/1001", "alice", "user", http.StatusOK)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner PUT: got %d, want 200", rec.Code)
+	}
+}
+
 // A bypass role (support/admin) is allowed to see others' objects.
 func TestBOLAOwnership_BypassRoleSkips(t *testing.T) {
 	cfg := ownershipCfg()
