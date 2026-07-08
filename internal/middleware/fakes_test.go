@@ -27,6 +27,7 @@ type fakeStore struct {
 	trackOwner  func() (int64, bool, error)  // (priorOwners, alreadyOwned, err)
 	getOwner    func() (string, bool, error) // GetObjectOwner override (confirmed-owner block)
 	setOwners   []string                     // captured SetObjectOwner values
+	objOwners   map[string]string            // scope+id -> owner, so Set via one method is seen by Get via another
 	jtiRevoked  map[string]bool
 	jtiErr      error // when set, IsJTIRevoked returns this error (Redis outage)
 	blockedIPs  map[string]bool
@@ -126,13 +127,20 @@ func (f *fakeStore) TrackObjectOwner(_ context.Context, _, _, _ string, _ time.D
 	}
 	return 0, false, nil
 }
-func (f *fakeStore) SetObjectOwner(_ context.Context, _, _, owner string, _ time.Duration) error {
+func (f *fakeStore) SetObjectOwner(_ context.Context, scope, id, owner string, _ time.Duration) error {
 	f.setOwners = append(f.setOwners, owner)
+	if f.objOwners == nil {
+		f.objOwners = map[string]string{}
+	}
+	f.objOwners[scope+"\x00"+id] = owner
 	return nil
 }
-func (f *fakeStore) GetObjectOwner(_ context.Context, _, _ string) (string, bool, error) {
+func (f *fakeStore) GetObjectOwner(_ context.Context, scope, id string) (string, bool, error) {
 	if f.getOwner != nil {
 		return f.getOwner()
+	}
+	if o, ok := f.objOwners[scope+"\x00"+id]; ok {
+		return o, true, nil
 	}
 	return "", false, nil
 }
