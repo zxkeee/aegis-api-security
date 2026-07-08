@@ -99,6 +99,11 @@ type GraphNode struct {
 	Posture  string `json:"posture,omitempty"` // endpoint posture
 	Risk     int    `json:"risk,omitempty"`    // endpoint risk score
 	PII      bool   `json:"pii,omitempty"`     // endpoint exposes PII
+	// Flagged marks a node that appears in recent authorization-abuse events
+	// (BOLA/BFLA/IDOR); AbuseCount is how many. Set by the API layer, which joins
+	// the graph with the forensic feed. Lets the map show who/what is under abuse.
+	Flagged    bool `json:"flagged,omitempty"`
+	AbuseCount int  `json:"abuse_count,omitempty"`
 }
 
 // GraphEdge is a consumer calling an endpoint, weighted by request count.

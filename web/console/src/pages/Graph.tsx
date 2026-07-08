@@ -57,6 +57,8 @@ export function Graph() {
     return { consumers, endpoints, pos, maxReq, height, adj };
   }, [data]);
 
+  const flaggedCount = useMemo(() => (data ? data.nodes.filter((n) => n.flagged).length : 0), [data]);
+
   const activeSet = useMemo(() => {
     if (!hover || !layout) return null;
     const s = new Set<string>([hover]);
@@ -71,10 +73,17 @@ export function Graph() {
         desc="Who calls what — consumers to API endpoints, weighted by traffic. Hover a node to trace its calls."
         action={
           data ? (
-            <span className="text-xs text-muted">
-              {layout?.consumers.length ?? 0} consumers · {layout?.endpoints.length ?? 0} endpoints ·{" "}
-              {data.edges.length} edges
-            </span>
+            <div className="flex items-center gap-3 text-xs">
+              {flaggedCount > 0 ? (
+                <span className="rounded-full bg-danger/10 px-2.5 py-1 font-medium text-danger">
+                  {flaggedCount} under abuse
+                </span>
+              ) : null}
+              <span className="text-muted">
+                {layout?.consumers.length ?? 0} consumers · {layout?.endpoints.length ?? 0} endpoints ·{" "}
+                {data.edges.length} edges
+              </span>
+            </div>
           ) : null
         }
       />
@@ -125,8 +134,9 @@ export function Graph() {
                     onMouseLeave={() => setHover(null)}
                     style={{ cursor: "pointer", opacity: faded ? 0.3 : 1 }}
                   >
-                    <title>{`${n.label}\n${n.kind ?? "?"} · ${n.requests} requests`}</title>
-                    <text x={p.x - R - 8} y={p.y + 4} textAnchor="end" className="fill-current text-[11px] font-mono" style={{ opacity: 0.85 }}>
+                    <title>{`${n.label}\n${n.kind ?? "?"} · ${n.requests} requests${n.flagged ? `\n⚠ ${n.abuse_count ?? 0} abuse events (BOLA/BFLA)` : ""}`}</title>
+                    {n.flagged ? <AbuseHalo x={p.x} y={p.y} /> : null}
+                    <text x={p.x - R - 8} y={p.y + 4} textAnchor="end" className={`text-[11px] font-mono ${n.flagged ? "fill-danger font-semibold" : "fill-current"}`} style={{ opacity: n.flagged ? 1 : 0.85 }}>
                       {trunc(n.label, 26)}
                     </text>
                     <circle cx={p.x} cy={p.y} r={R} className={kindFill(n.kind)} />
@@ -145,10 +155,11 @@ export function Graph() {
                     onMouseLeave={() => setHover(null)}
                     style={{ cursor: "pointer", opacity: faded ? 0.3 : 1 }}
                   >
-                    <title>{`${n.label}\n${n.posture ?? "?"} · risk ${n.risk ?? 0}${n.pii ? " · PII" : ""} · ${n.requests} requests`}</title>
+                    <title>{`${n.label}\n${n.posture ?? "?"} · risk ${n.risk ?? 0}${n.pii ? " · PII" : ""} · ${n.requests} requests${n.flagged ? `\n⚠ ${n.abuse_count ?? 0} abuse events (BOLA/BFLA)` : ""}`}</title>
+                    {n.flagged ? <AbuseHalo x={p.x} y={p.y} /> : null}
                     {n.pii ? <circle cx={p.x} cy={p.y} r={R + 3} className="fill-none stroke-danger" strokeWidth={1.5} /> : null}
                     <circle cx={p.x} cy={p.y} r={R} className={postureFill(n.posture)} />
-                    <text x={p.x + R + 8} y={p.y + 4} textAnchor="start" className="fill-current text-[11px] font-mono" style={{ opacity: 0.85 }}>
+                    <text x={p.x + R + 8} y={p.y + 4} textAnchor="start" className={`text-[11px] font-mono ${n.flagged ? "fill-danger font-semibold" : "fill-current"}`} style={{ opacity: n.flagged ? 1 : 0.85 }}>
                       {trunc(n.label, 30)}
                     </text>
                   </g>
@@ -166,20 +177,39 @@ function trunc(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
+// AbuseHalo is a pulsing red ring (native SMIL, no JS) marking a node that
+// appears in recent BOLA/BFLA abuse events — visually ties the map to detection.
+function AbuseHalo({ x, y }: { x: number; y: number }) {
+  return (
+    <circle cx={x} cy={y} className="fill-none stroke-danger" strokeWidth={2}>
+      <animate attributeName="r" values={`${R + 3};${R + 9};${R + 3}`} dur="1.6s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0.9;0.2;0.9" dur="1.6s" repeatCount="indefinite" />
+    </circle>
+  );
+}
+
 function Legend() {
-  const items: { cls: string; label: string; ring?: boolean }[] = [
+  const items: { cls: string; label: string; ring?: boolean; pulse?: boolean }[] = [
     { cls: "fill-accent", label: "protected / JWT" },
     { cls: "fill-warn", label: "partial / API-key" },
     { cls: "fill-danger", label: "unprotected / shadow" },
     { cls: "fill-muted", label: "anonymous IP" },
     { cls: "fill-none stroke-danger", label: "exposes PII", ring: true },
+    { cls: "fill-none stroke-danger", label: "under abuse (BOLA/BFLA)", ring: true, pulse: true },
   ];
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-white/5 px-1 pb-2 text-xs text-muted">
       {items.map((it) => (
         <span key={it.label} className="flex items-center gap-1.5">
           <svg width={16} height={16}>
-            <circle cx={8} cy={8} r={it.ring ? 5 : 6} className={it.cls} strokeWidth={it.ring ? 1.5 : 0} />
+            <circle cx={8} cy={8} r={it.ring ? 5 : 6} className={it.cls} strokeWidth={it.ring ? 1.5 : 0}>
+              {it.pulse ? (
+                <>
+                  <animate attributeName="r" values="4;6.5;4" dur="1.6s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.9;0.3;0.9" dur="1.6s" repeatCount="indefinite" />
+                </>
+              ) : null}
+            </circle>
           </svg>
           {it.label}
         </span>

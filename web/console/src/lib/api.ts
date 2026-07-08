@@ -134,6 +134,8 @@ export interface GraphNode {
   posture?: string;
   risk?: number;
   pii?: boolean;
+  flagged?: boolean; // appears in recent BOLA/BFLA abuse events
+  abuse_count?: number;
 }
 export interface GraphEdge {
   source: string;
