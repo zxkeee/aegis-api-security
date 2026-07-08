@@ -119,6 +119,9 @@ export interface BlockEntry {
   method: string;
   reason: string;
   code: number;
+  // extra carries per-event detail (severity, why, owner, …) for abuse
+  // detections like BOLA/BFLA. Present on security-relevant events.
+  extra?: Record<string, unknown>;
 }
 
 export interface Effectiveness {
