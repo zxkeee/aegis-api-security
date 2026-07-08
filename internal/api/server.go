@@ -100,6 +100,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/posture/summary", h.getPostureSummary)
 	s.mux.HandleFunc("GET /api/effectiveness", h.getEffectiveness)
 	s.mux.HandleFunc("GET /api/findings", h.getFindings)
+	s.mux.HandleFunc("GET /api/compliance", h.getCompliance)
 	s.mux.HandleFunc("GET /api/report", h.getReport)
 
 	// OpenAPI spec import + documented-vs-observed drift (per-tenant).

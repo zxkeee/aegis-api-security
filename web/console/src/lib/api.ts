@@ -147,6 +147,23 @@ export interface Graph {
   edges: GraphEdge[];
 }
 
+export interface ComplianceControl {
+  framework: string;
+  control: string;
+  title: string;
+  severity: string;
+  count: number;
+  issues: string[];
+}
+export interface ComplianceFramework {
+  framework: string;
+  controls: ComplianceControl[];
+}
+export interface ComplianceReport {
+  frameworks: ComplianceFramework[];
+  summary: { critical: number; warning: number; controls_affected: number };
+}
+
 export interface Effectiveness {
   blocks_by_control: Record<string, number>;
   total_blocks: number;

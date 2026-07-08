@@ -237,6 +237,31 @@ func (h *handlers) getFindings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /api/compliance — the findings and runtime abuse detections mapped onto
+// NIS2 / ISO 27001 / OWASP controls, for the compliance/audit view.
+func (h *handlers) getCompliance(w http.ResponseWriter, r *http.Request) {
+	if !h.catalogReady(w) {
+		return
+	}
+	eps, err := h.catalog.ListEndpoints(r.Context(), discovery.EndpointFilter{Limit: 1000})
+	if err != nil {
+		h.writeStoreError(w, "admin: compliance findings failed", "failed to build compliance report", err)
+		return
+	}
+	rows, _ := flattenFindings(eps)
+
+	// Runtime access-control abuse (BOLA/BFLA) counts, best-effort.
+	abuse := map[string]int{}
+	if entries, ferr := h.store.GetForensicLog(r.Context(), 300); ferr == nil {
+		for _, e := range entries {
+			if abuseOWASP(e.Reason) != "" {
+				abuse[e.Reason]++
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, buildCompliance(rows, abuse))
+}
+
 // findingRow is one endpoint↔finding pair in the findings view.
 type findingRow struct {
 	Method       string            `json:"method"`
