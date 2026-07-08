@@ -4,6 +4,7 @@ import { Spinner } from "@/components/ui";
 import { api } from "@/lib/api";
 import { Access } from "@/pages/Access";
 import { Catalog } from "@/pages/Catalog";
+import { Compliance } from "@/pages/Compliance";
 import { Consumers } from "@/pages/Consumers";
 import { Findings } from "@/pages/Findings";
 import { Forensics } from "@/pages/Forensics";
@@ -19,6 +20,7 @@ const PAGES: Record<string, React.ComponentType> = {
   catalog: Catalog,
   posture: Posture,
   findings: Findings,
+  compliance: Compliance,
   consumers: Consumers,
   map: Graph,
   forensics: Forensics,

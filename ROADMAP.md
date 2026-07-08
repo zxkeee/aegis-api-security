@@ -65,7 +65,7 @@ API Security (Akamai / Salt / Noname). Оценка основана на фак
 
 | # | Разрыв | Что сделать |
 |---|--------|-------------|
-| P2-1 | **Compliance-отчётность** | Шаблоны PCI-DSS / HIPAA / GDPR, классификация PII (сейчас regex), data residency, DSAR. |
+| P2-1 | **Compliance-отчётность** 🟡 v1 | Сделано: `GET /api/compliance` + вкладка Compliance — находки (PII-exposure, shadow-API) и рантайм access-control abuse (BOLA/BFLA) маппятся на контроли **NIS2** (Art. 21(2)) и **ISO/IEC 27001:2022** (Annex A) через OWASP API Top-10 (напр. IDOR → NIS2 Art.21(2)(i) / ISO A.8.3), с severity и списком issues; чистая функция маппинга под тестом. Дальше: PCI-DSS/HIPAA/GDPR/DORA-шаблоны, экспорт отчёта (PDF/CSV), data residency, DSAR. |
 | P2-2 | **Лицензирование/метеринг** | License-ключи, тарифы, учёт потребления. |
 | P2-3 | **WAF maturity** 🟡 v1 | Сделано: полный **OWASP CRS v4** через Coraza (`waf.use_crs`, embedded `coraza-coreruleset`), anomaly scoring с настраиваемыми `paranoia_level` (1–4) и `anomaly_threshold`, monitor-режим (DetectionOnly при `block_mode:false`) для тюнинга FP перед enforcement, `ruleset_path` для операторских исключений. Дальше: управление false-positive и тюнинг правил из UI. |
 | P2-4 | **UI-зрелость** | Временные диапазоны, пагинация каталога, нормальная библиотека графиков, drill-down фильтры. |
