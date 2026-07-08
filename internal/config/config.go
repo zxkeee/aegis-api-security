@@ -279,6 +279,19 @@ type WAFConfig struct {
 	RulesetPath string   `yaml:"ruleset_path"`
 	BlockMode   bool     `yaml:"block_mode"`
 	Exclude     []string `yaml:"exclude_paths"`
+	// UseCRS loads the full OWASP Core Rule Set (v4, ~900 rules with anomaly
+	// scoring) via Coraza instead of the built-in starter rules — the
+	// production-grade ruleset. Tune with ParanoiaLevel and AnomalyThreshold, and
+	// start in detection (block_mode: false) to surface false positives on your
+	// traffic before enforcing. A RulesetPath, when set, is included after CRS as
+	// tenant overrides (e.g. rule exclusions).
+	UseCRS bool `yaml:"use_crs"`
+	// ParanoiaLevel (1–4) trades coverage for false positives: 1 (default) suits
+	// most APIs; higher levels catch more attacks but flag more benign traffic.
+	ParanoiaLevel int `yaml:"paranoia_level"`
+	// AnomalyThreshold is the inbound anomaly score at which CRS blocks (default
+	// 5). Raise to be more permissive, lower to be stricter. Only used with CRS.
+	AnomalyThreshold int `yaml:"anomaly_threshold"`
 }
 
 type BotConfig struct {
@@ -572,6 +585,14 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 func Validate(cfg GatewayConfig) error {
 	if cfg.ShutdownDrain < 0 {
 		return errors.New("shutdown_drain must not be negative")
+	}
+	if cfg.Security.WAF.UseCRS {
+		if pl := cfg.Security.WAF.ParanoiaLevel; pl != 0 && (pl < 1 || pl > 4) {
+			return fmt.Errorf("waf.paranoia_level must be 1-4 (got %d)", pl)
+		}
+		if cfg.Security.WAF.AnomalyThreshold < 0 {
+			return errors.New("waf.anomaly_threshold must not be negative")
+		}
 	}
 	if err := validateAdminSecret(cfg); err != nil {
 		return err

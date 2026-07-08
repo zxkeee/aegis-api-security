@@ -137,8 +137,15 @@ security:
 
   waf:
     enabled: true
-    ruleset_path: ""
+    ruleset_path: ""      # optional extra directives, included last (e.g. rule exclusions)
     block_mode: true
+    # use_crs loads the full OWASP Core Rule Set v4 (~900 rules, anomaly scoring)
+    # instead of the built-in starter rules — the production-grade choice. Roll it
+    # out in monitor first (block_mode: false = detect + log, no blocking), tune
+    # false positives via ruleset_path (SecRuleRemoveById ...), then enforce.
+    use_crs: false
+    paranoia_level: 1     # 1-4: higher catches more, flags more benign traffic
+    anomaly_threshold: 5  # inbound score at which CRS blocks (lower = stricter)
 
   bot:
     enabled: true

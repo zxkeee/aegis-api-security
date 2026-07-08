@@ -1,15 +1,33 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/secevent"
 
+	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
 	"github.com/corazawaf/coraza/v3"
 	txhttp "github.com/corazawaf/coraza/v3/http"
+	"github.com/jcchavezs/mergefs"
+	mergefsio "github.com/jcchavezs/mergefs/io"
 )
+
+// jsonBodyDirectives make Coraza inspect JSON / typed / untyped request bodies.
+// Coraza only auto-selects the urlencoded and multipart processors, so without
+// these an application/json body (the API norm) is never flattened into ARGS and
+// every body-borne payload bypasses the rules simply by picking a Content-Type.
+// Applied in both the built-in and OWASP-CRS modes.
+const jsonBodyDirectives = `
+	SecRule REQUEST_HEADERS:Content-Type "@rx ^application/(?:[a-z0-9.+-]+\+)?json" \
+		"id:10000,phase:1,pass,nolog,ctl:requestBodyProcessor=JSON"
+	SecRule REQUEST_HEADERS:Content-Type "!@rx (?i)^(?:application/(?:[a-z0-9.+-]+\+)?json|application/x-www-form-urlencoded|multipart/form-data)" \
+		"id:10013,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
+	SecRule &REQUEST_HEADERS:Content-Type "@eq 0" \
+		"id:10014,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
+`
 
 // WAF provides Web Application Firewall protection using Coraza (OWASP CRS).
 // Protects against: SQL Injection, XSS, RCE, LFI, SSRF, XXE, Log4Shell, and more.
@@ -18,9 +36,7 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 		return passthrough
 	}
 
-	wafCfg := coraza.NewWAFConfig()
-
-	// Built-in rules covering OWASP Top 10
+	// Built-in starter rules covering the OWASP Top 10 (used unless use_crs).
 	directives := `
 		SecRuleEngine On
 		SecRequestBodyAccess On
@@ -104,21 +120,24 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 			"id:10012,phase:1,deny,status:400,log,msg:'Request Smuggling',tag:'protocol',severity:CRITICAL"
 	`
 
-	if cfg.RulesetPath != "" {
-		wafCfg = wafCfg.WithDirectivesFromFile(cfg.RulesetPath)
-	}
-	wafCfg = wafCfg.WithDirectives(directives)
-
-	waf, err := coraza.NewWAF(wafCfg)
+	waf, err := buildCorazaWAF(cfg, directives)
 	if err != nil {
 		log.Error("waf: failed to initialize", map[string]any{"error": err.Error()})
 		return passthrough
 	}
 
-	log.Info("waf: Coraza engine ready", map[string]any{
-		"rules":      15,
-		"block_mode": cfg.BlockMode,
-	})
+	if cfg.UseCRS {
+		log.Info("waf: OWASP CRS v4 engine ready", map[string]any{
+			"paranoia_level":    firstPositive(cfg.ParanoiaLevel, 1),
+			"anomaly_threshold": firstPositive(cfg.AnomalyThreshold, 5),
+			"block_mode":        cfg.BlockMode,
+		})
+	} else {
+		log.Info("waf: Coraza engine ready (built-in rules)", map[string]any{
+			"rules":      12,
+			"block_mode": cfg.BlockMode,
+		})
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +179,55 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 			}
 		})
 	}
+}
+
+// buildCorazaWAF assembles the Coraza engine. In CRS mode it loads the full
+// OWASP Core Rule Set v4 (embedded via coraza-coreruleset) with anomaly scoring
+// at the configured paranoia level and threshold; otherwise it uses the built-in
+// starter directives. A RulesetPath is included last as operator overrides
+// (e.g. SecRuleRemoveById for a tuned-out false positive).
+func buildCorazaWAF(cfg config.WAFConfig, builtin string) (coraza.WAF, error) {
+	if cfg.UseCRS {
+		pl := firstPositive(cfg.ParanoiaLevel, 1)
+		at := firstPositive(cfg.AnomalyThreshold, 5)
+		// @coraza.conf-recommended ships SecRuleEngine DetectionOnly. Enforce only
+		// in block mode; otherwise stay DetectionOnly (monitor: score + log, no
+		// block) so operators can tune out false positives before enforcing.
+		engine := "DetectionOnly"
+		if cfg.BlockMode {
+			engine = "On"
+		}
+		directives := fmt.Sprintf(`
+Include @coraza.conf-recommended
+SecRuleEngine %s
+Include @crs-setup.conf.example
+SecAction "id:9005000,phase:1,nolog,pass,t:none,setvar:tx.blocking_paranoia_level=%d,setvar:tx.detection_paranoia_level=%d,setvar:tx.inbound_anomaly_score_threshold=%d,setvar:tx.outbound_anomaly_score_threshold=%d"
+%s
+Include @owasp_crs/*.conf
+`, engine, pl, pl, at, at, jsonBodyDirectives)
+
+		wafCfg := coraza.NewWAFConfig().
+			WithRootFS(mergefs.Merge(coreruleset.FS, mergefsio.OSFS)).
+			WithDirectives(directives)
+		if cfg.RulesetPath != "" {
+			wafCfg = wafCfg.WithDirectivesFromFile(cfg.RulesetPath)
+		}
+		return coraza.NewWAF(wafCfg)
+	}
+
+	wafCfg := coraza.NewWAFConfig()
+	if cfg.RulesetPath != "" {
+		wafCfg = wafCfg.WithDirectivesFromFile(cfg.RulesetPath)
+	}
+	return coraza.NewWAF(wafCfg.WithDirectives(builtin))
+}
+
+// firstPositive returns v when it is > 0, else the fallback default.
+func firstPositive(v, def int) int {
+	if v > 0 {
+		return v
+	}
+	return def
 }
 
 type wafStatusWriter struct {

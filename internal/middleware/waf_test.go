@@ -225,3 +225,46 @@ func TestWAF_RealBlockStillAttributed(t *testing.T) {
 		t.Fatalf("real WAF block wrote %d forensic events, want 1", len(st.forensic))
 	}
 }
+
+// crsHandler builds the WAF in full OWASP CRS mode.
+func crsHandler(t *testing.T) http.Handler {
+	t.Helper()
+	mw := WAF(config.WAFConfig{Enabled: true, BlockMode: true, UseCRS: true}, fakeLogger{}, &fakeStore{})
+	return mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+}
+
+// wafReqH sends a request with browser-like headers so CRS protocol-enforcement
+// rules (missing User-Agent/Accept) don't add anomaly noise to benign traffic.
+func wafReqH(h http.Handler, method, target string) int {
+	r := httptest.NewRequest(method, target, nil)
+	r.Header.Set("User-Agent", "Mozilla/5.0")
+	r.Header.Set("Accept", "*/*")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec.Code
+}
+
+// TestWAF_CRS_BlocksAttacksAllowsBenign proves the OWASP CRS engine loads and
+// enforces: real attacks are blocked, ordinary API traffic passes.
+func TestWAF_CRS_BlocksAttacksAllowsBenign(t *testing.T) {
+	h := crsHandler(t)
+
+	attacks := map[string]string{
+		"sqli":      "/x?id=1%27%20UNION%20SELECT%20username%2Cpassword%20FROM%20users--",
+		"xss":       "/x?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+		"traversal": "/x?file=..%2F..%2F..%2F..%2Fetc%2Fpasswd",
+		"rce":       "/x?cmd=%3B%20cat%20%2Fetc%2Fpasswd",
+	}
+	for name, target := range attacks {
+		if code := wafReqH(h, http.MethodGet, target); code != http.StatusForbidden {
+			t.Errorf("CRS %s: got %d, want 403", name, code)
+		}
+	}
+
+	// Ordinary API request must pass (no false positive).
+	if code := wafReqH(h, http.MethodGet, "/api/v1/orders?limit=10&sort=created_at"); code != http.StatusOK {
+		t.Errorf("CRS benign: got %d, want 200", code)
+	}
+}
