@@ -24,6 +24,9 @@ func (fakeLogger) BlockEvent(string, string, string, string, map[string]any) {}
 type fakeStore struct {
 	incrRate    func(ctx context.Context, key string, window time.Duration) (int64, error)
 	trackObject func() (int64, error)
+	trackOwner  func() (int64, bool, error)  // (priorOwners, alreadyOwned, err)
+	getOwner    func() (string, bool, error) // GetObjectOwner override (confirmed-owner block)
+	setOwners   []string                     // captured SetObjectOwner values
 	jtiRevoked  map[string]bool
 	jtiErr      error // when set, IsJTIRevoked returns this error (Redis outage)
 	blockedIPs  map[string]bool
@@ -116,6 +119,22 @@ func (f *fakeStore) TrackObjectAccess(_ context.Context, _, _, _ string, _ time.
 
 func (f *fakeStore) TrackBaseline(_ context.Context, _, _ string, _ int64, _ bool, _ time.Duration) (float64, error) {
 	return f.baseline, nil
+}
+func (f *fakeStore) TrackObjectOwner(_ context.Context, _, _, _ string, _ time.Duration) (int64, bool, error) {
+	if f.trackOwner != nil {
+		return f.trackOwner()
+	}
+	return 0, false, nil
+}
+func (f *fakeStore) SetObjectOwner(_ context.Context, _, _, owner string, _ time.Duration) error {
+	f.setOwners = append(f.setOwners, owner)
+	return nil
+}
+func (f *fakeStore) GetObjectOwner(_ context.Context, _, _ string) (string, bool, error) {
+	if f.getOwner != nil {
+		return f.getOwner()
+	}
+	return "", false, nil
 }
 
 func (f *fakeStore) ValidateSession(_ context.Context, token string) (iam.Session, bool, error) {

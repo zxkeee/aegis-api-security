@@ -66,7 +66,7 @@ func TestRequireAuth_Branches(t *testing.T) {
 }
 
 // Store-backed read handlers must surface a Redis outage as 500 (not panic).
-func TestReadHandlers_RedisDown500(t *testing.T) {
+func TestReadHandlers_StoreDown503(t *testing.T) {
 	handlers := map[string]func(http.ResponseWriter, *http.Request){}
 	h, mr := redisHandlers(t)
 	handlers["metrics"] = h.getMetrics
@@ -74,13 +74,15 @@ func TestReadHandlers_RedisDown500(t *testing.T) {
 	handlers["inventory"] = h.getInventory
 	handlers["blocked-ips"] = h.getBlockedIPs
 	handlers["effectiveness"] = h.getEffectiveness
-	mr.Close() // simulate outage
+	mr.Close() // simulate a store outage
 
+	// A backing-store outage is a retryable dependency failure: the read handlers
+	// must return 503 (so a client / load balancer backs off), not 500.
 	for name, fn := range handlers {
 		rec := httptest.NewRecorder()
 		fn(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("%s with Redis down = %d, want 500", name, rec.Code)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s with store down = %d, want 503", name, rec.Code)
 		}
 	}
 }

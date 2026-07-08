@@ -7,12 +7,16 @@ toolchain go1.26.4
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.0
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/corazawaf/coraza-coreruleset/v4 v4.25.0
 	github.com/corazawaf/coraza/v3 v3.7.0
+	github.com/coreos/go-oidc/v3 v3.19.0
 	github.com/fsnotify/fsnotify v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/jcchavezs/mergefs v0.1.1
 	github.com/lib/pq v1.12.3
 	github.com/redis/go-redis/v9 v9.19.0
 	golang.org/x/crypto v0.53.0
+	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -20,7 +24,6 @@ require (
 	github.com/MicahParks/jwkset v0.11.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/corazawaf/libinjection-go v0.3.2 // indirect
-	github.com/coreos/go-oidc/v3 v3.19.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.18.0 // indirect
@@ -37,7 +40,6 @@ require (
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect

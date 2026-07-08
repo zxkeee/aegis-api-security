@@ -45,9 +45,13 @@ backing store killed mid-run.
 ## Still open (needs a quieter/dedicated box)
 
 - Capacity sweep (VU ramp, WAF on/off) for published max-RPS numbers.
-- PostgreSQL-outage under load (catalog/forensic) — unit-level covered
-  (`catalog_nil_test.go`), not yet load-tested.
-- Rolling-update drain: zero-5xx during `Shutdown(ctx)` under sustained traffic.
+- ~~PostgreSQL-outage under load~~ — **done**, see
+  `reliability-results-2026-07-08.md` (data plane 100% success, flat latency
+  through the outage; async catalog/forensic decoupling holds under load).
+- ~~Rolling-update drain: zero-5xx during `Shutdown(ctx)`~~ — **done**, same doc.
+  Zero 5xx confirmed; added a lame-duck `shutdown_drain` grace (`/readyz` → 503 →
+  drain → stop) so rollouts behind a readiness-gated LB also shed zero connection
+  errors.
 
 ## Reproduce
 

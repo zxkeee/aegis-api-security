@@ -60,6 +60,38 @@ func serveJWT(cfg config.AuthConfig, st Store, authz string) *httptest.ResponseR
 	return rec
 }
 
+// A configured identity_claim is propagated as X-Gateway-Identity (numeric
+// claims stringified cleanly) so ownership detection can compare against a
+// caller id that is not the subject.
+func TestJWT_PropagatesIdentityClaim(t *testing.T) {
+	cfg := config.AuthConfig{Enabled: true, Secret: testSecret, IdentityClaim: "uid"}
+	var gotIdentity, gotSubject string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIdentity = r.Header.Get("X-Gateway-Identity")
+		gotSubject = r.Header.Get("X-Gateway-Subject")
+		w.WriteHeader(http.StatusOK)
+	})
+	_ = InitTrustedProxies(nil)
+	h := NewJWTAuth(cfg, fakeLogger{}, &fakeStore{}).Middleware()(next)
+	tok := hsToken(t, testSecret, jwt.MapClaims{
+		"sub": "alice@example.com", "uid": 42, "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "1.2.3.4:1"
+	r.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid token: got %d", rec.Code)
+	}
+	if gotSubject != "alice@example.com" {
+		t.Fatalf("subject = %q, want alice@example.com", gotSubject)
+	}
+	if gotIdentity != "42" {
+		t.Fatalf("X-Gateway-Identity = %q, want 42 (numeric uid claim)", gotIdentity)
+	}
+}
+
 func TestJWT_ValidHMAC_Passes(t *testing.T) {
 	cfg := config.AuthConfig{Enabled: true, Secret: testSecret}
 	st := &fakeStore{}

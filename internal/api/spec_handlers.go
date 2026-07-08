@@ -67,8 +67,7 @@ func (h *handlers) getSpec(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, found, err := h.specCat.SpecMeta(r.Context())
 	if err != nil {
-		h.log.Error("admin: spec meta failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch spec")
+		h.writeStoreError(w, "admin: spec meta failed", "failed to fetch spec", err)
 		return
 	}
 	if !found {
@@ -85,8 +84,7 @@ func (h *handlers) deleteSpec(w http.ResponseWriter, r *http.Request) {
 	}
 	ok, err := h.specCat.DeleteSpec(r.Context())
 	if err != nil {
-		h.log.Error("admin: spec delete failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to delete spec")
+		h.writeStoreError(w, "admin: spec delete failed", "failed to delete spec", err)
 		return
 	}
 	if !ok {
@@ -104,8 +102,7 @@ func (h *handlers) getDrift(w http.ResponseWriter, r *http.Request) {
 	}
 	report, err := h.specCat.Drift(r.Context())
 	if err != nil {
-		h.log.Error("admin: drift report failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to build drift report")
+		h.writeStoreError(w, "admin: drift report failed", "failed to build drift report", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, report)

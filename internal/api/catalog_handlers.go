@@ -34,8 +34,7 @@ func (h *handlers) getCatalog(w http.ResponseWriter, r *http.Request) {
 
 	eps, err := h.catalog.ListEndpoints(r.Context(), f)
 	if err != nil {
-		h.log.Error("admin: catalog list failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch catalog")
+		h.writeStoreError(w, "admin: catalog list failed", "failed to fetch catalog", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"endpoints": eps, "count": len(eps)})
@@ -49,8 +48,7 @@ func (h *handlers) getCatalogEndpoint(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ep, consumers, err := h.catalog.GetEndpoint(r.Context(), id)
 	if err != nil {
-		h.log.Error("admin: catalog endpoint failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch endpoint")
+		h.writeStoreError(w, "admin: catalog endpoint failed", "failed to fetch endpoint", err)
 		return
 	}
 	if ep == nil {
@@ -68,8 +66,7 @@ func (h *handlers) getConsumers(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	consumers, err := h.catalog.ListConsumers(r.Context(), limit)
 	if err != nil {
-		h.log.Error("admin: consumers list failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch consumers")
+		h.writeStoreError(w, "admin: consumers list failed", "failed to fetch consumers", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"consumers": consumers, "count": len(consumers)})
@@ -82,8 +79,7 @@ func (h *handlers) getPostureSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	sum, err := h.catalog.PostureSummary(r.Context())
 	if err != nil {
-		h.log.Error("admin: posture summary failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch posture summary")
+		h.writeStoreError(w, "admin: posture summary failed", "failed to fetch posture summary", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sum)
@@ -95,8 +91,7 @@ func (h *handlers) getPostureSummary(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) getEffectiveness(w http.ResponseWriter, r *http.Request) {
 	metrics, err := h.store.GetMetrics(r.Context())
 	if err != nil {
-		h.log.Error("admin: effectiveness metrics failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch metrics")
+		h.writeStoreError(w, "admin: effectiveness metrics failed", "failed to fetch metrics", err)
 		return
 	}
 
@@ -138,8 +133,7 @@ func (h *handlers) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	eps, err := h.catalog.ListEndpoints(r.Context(), discovery.EndpointFilter{Limit: 1000})
 	if err != nil {
-		h.log.Error("admin: report failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to build report")
+		h.writeStoreError(w, "admin: report failed", "failed to build report", err)
 		return
 	}
 
@@ -166,8 +160,7 @@ func (h *handlers) getFindings(w http.ResponseWriter, r *http.Request) {
 	}
 	eps, err := h.catalog.ListEndpoints(r.Context(), discovery.EndpointFilter{Limit: 1000})
 	if err != nil {
-		h.log.Error("admin: findings list failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to build findings")
+		h.writeStoreError(w, "admin: findings list failed", "failed to build findings", err)
 		return
 	}
 

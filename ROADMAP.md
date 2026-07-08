@@ -16,7 +16,7 @@ API Security (Akamai / Salt / Noname). Оценка основана на фак
 - ✅ JWT auth: HMAC + JWKS, защита от alg-confusion, fail-closed при недоступном JWKS
 - ✅ DLP-маскирование ответов (стриминг, Flusher, Hijacker/WebSocket)
 - ✅ IP-guard, threat feed, behavior scoring, challenge, security headers
-- ✅ WAF на Coraza (🟡 12 самописных правил, не полный OWASP CRS)
+- ✅ WAF на Coraza: встроенные starter-правила ИЛИ полный **OWASP CRS v4** (`waf.use_crs`, ~900 правил + anomaly scoring, paranoia 1–4, monitor/block)
 - ✅ Hot-reload конфига, graceful shutdown
 - ✅ Forensic-логи в PostgreSQL (батчинг)
 - ✅ Audit log админ-действий в PostgreSQL (`internal/audit`, async; `GET /api/audit`)
@@ -67,7 +67,7 @@ API Security (Akamai / Salt / Noname). Оценка основана на фак
 |---|--------|-------------|
 | P2-1 | **Compliance-отчётность** | Шаблоны PCI-DSS / HIPAA / GDPR, классификация PII (сейчас regex), data residency, DSAR. |
 | P2-2 | **Лицензирование/метеринг** | License-ключи, тарифы, учёт потребления. |
-| P2-3 | **WAF maturity** | Полный OWASP CRS, управление false-positive, тюнинг правил из UI. |
+| P2-3 | **WAF maturity** 🟡 v1 | Сделано: полный **OWASP CRS v4** через Coraza (`waf.use_crs`, embedded `coraza-coreruleset`), anomaly scoring с настраиваемыми `paranoia_level` (1–4) и `anomaly_threshold`, monitor-режим (DetectionOnly при `block_mode:false`) для тюнинга FP перед enforcement, `ruleset_path` для операторских исключений. Дальше: управление false-positive и тюнинг правил из UI. |
 | P2-4 | **UI-зрелость** | Временные диапазоны, пагинация каталога, нормальная библиотека графиков, drill-down фильтры. |
 | P2-5 | **Документация** | Runbooks, upgrade path, миграции, SLA. |
 
@@ -117,7 +117,7 @@ auth/без, с PII/без). Это готовый фундамент для:
 
 | Ставка | Что построить | Опора на текущее | Усилие |
 |---|---|---|---|
-| A1. **BOLA/BFLA** ✅ v1 | Сделано: middleware `AbuseDetection` — BOLA через детект перебора object-ID одним потребителем (HLL distinct-count в окне), BFLA через privileged-path + required-roles на проверенных JWT-ролях. Detect-only/block режимы. Дальше: per-consumer baseline вместо фикс-порога (A2). | consumer-граф + catalog | сделано |
+| A1. **BOLA/BFLA** ✅ v2 | Сделано: middleware `AbuseDetection` — (1) BOLA-**enumeration** через детект перебора object-ID одним потребителем (HLL distinct-count в окне) + adaptive baseline (A2); (2) BFLA через privileged-path + required-roles на проверенных JWT-ролях; (3) **BOLA-object-ownership / single-object IDOR**: учит, какие потребители трогают какие объекты (`TrackObjectOwner`, per-object owner-set в Redis, tenant-scoped), и флагует потребителя, который **успешно (2xx)** читает объект, принадлежащий другому малому набору потребителей и им ранее не тронутый — та самая одиночная IDOR, которую enumeration и сигнатурный WAF не видят. Ключевой discriminator: 4xx от бэкенда = авторизация сработала, не флагуем (детект после ответа). Detect-only/block режимы. **Confirmed-ownership (v2):** владелец берётся из **тела ответа** (`owner_fields`, напр. `user_id` — top-level или под `data`) и сверяется с subject — превращает эвристику в подтверждённую привязку объект→владелец (severity critical vs warning). **Proactive-block:** зная подтверждённого владельца, cross-owner доступ блокируется **до форварда** (`object_ownership_block`), а не только фиксируется; `ownership_bypass_roles` для support/admin. **Identity-claim:** владелец сверяется с настраиваемым claim'ом (`auth.identity_claim`, напр. `uid` → `X-Gateway-Identity`), а не только с `sub` — работает когда владелец ресурса не совпадает с subject (sub=email, owner=числовой id). Дальше: вложенные owner-поля/массивы, peer-group, ownership из write-запросов. | consumer-граф + catalog | сделано |
 | A2. **Behavioral baseline на потребителя** 🟡 v1 | Сделано: онлайн per-consumer baseline для BOLA — EWMA (alpha=0.05) distinct-object-count на endpoint в Redis (`TrackBaseline`, Lua-атомарно), адаптивный порог `current > baseline*sensitivity` поверх абсолютного hard-ceiling `enum_threshold`; ловит спайк потребителя с низкой нормой (3→30), НЕ флагует легитимно-высокий профиль (норма 60); `adaptive_min_objects` floor против шума на крошечной базе; baseline не отравляется атакой (learn=false при пробое ceiling). Дальше: объём/время/гео/error-rate профиль, percentile вместо EWMA-множителя, peer-group, режим обучения. | observations | 3–4 нед |
 | A3. **Account Takeover / credential stuffing** | Velocity логинов, impossible travel, смена устройства/JA3, всплеск 401→200. Отдельный высокоценный сценарий. | forensic + consumer | 2–3 нед |
 | A4. **Business-logic abuse** | Enumeration, scraping, inventory-hoarding: детект перебора ID, аномальной полноты обхода ресурса. | normalize + catalog | 2 нед |

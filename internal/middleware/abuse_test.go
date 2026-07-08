@@ -27,6 +27,229 @@ func runAbuse(cfg config.AbuseConfig, st Store, method, path, subject, roles str
 	return rec
 }
 
+// runAbuseStatus is runAbuse with a controllable backend response status, so the
+// object-ownership check (which keys off 2xx-vs-4xx) can be exercised both ways.
+func runAbuseStatus(cfg config.AbuseConfig, st Store, method, path, subject, roles string, status int) *httptest.ResponseRecorder {
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
+	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(method, path, nil)
+	r.RemoteAddr = "1.2.3.4:1"
+	if subject != "" {
+		r.Header.Set("X-Gateway-Subject", subject)
+	}
+	if roles != "" {
+		r.Header.Set("X-Gateway-Roles", roles)
+	}
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// ── Object-ownership BOLA / IDOR (single-object) ─────────────────────────────
+
+func ownershipCfg() config.AbuseConfig {
+	return config.AbuseConfig{Enabled: true, ObjectOwnership: true, SharedObjectThreshold: 2, Window: time.Minute}
+}
+
+// runAbuseBody is runAbuseStatus with a controllable JSON response body, so the
+// confirmed-ownership path (owner extracted from the body) can be exercised.
+func runAbuseBody(cfg config.AbuseConfig, st Store, path, subject, roles string, status int, body string) *httptest.ResponseRecorder {
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	})
+	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.RemoteAddr = "1.2.3.4:1"
+	if subject != "" {
+		r.Header.Set("X-Gateway-Subject", subject)
+	}
+	if roles != "" {
+		r.Header.Set("X-Gateway-Roles", roles)
+	}
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// Heuristic (first-accessor) path: a consumer reading an object owned by another
+// small set — and never accessed by it — is a warning (no body confirmation).
+func TestBOLAOwnership_CrossOwnerHeuristicFlagged(t *testing.T) {
+	st := &fakeStore{trackOwner: func() (int64, bool, error) { return 1, false, nil }}
+	rec := runAbuseStatus(ownershipCfg(), st, http.MethodGet, "/api/orders/12345", "bob", "user", http.StatusOK)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ownership is detect-only, must not alter status: got %d", rec.Code)
+	}
+	if len(st.forensic) != 1 || st.forensic[0].Reason != "bola_object_ownership" {
+		t.Fatalf("expected 1 bola_object_ownership event, got %+v", st.forensic)
+	}
+	if st.forensic[0].Extra["severity"] != "warning" {
+		t.Fatalf("heuristic severity = %v, want warning", st.forensic[0].Extra["severity"])
+	}
+}
+
+// Confirmed path: the response body names an owner different from the caller —
+// a real data leak, flagged critical, and the owner binding is recorded.
+func TestBOLAOwnership_ConfirmedFromBodyFlagged(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user_id"}
+	st := &fakeStore{}
+	_ = runAbuseBody(cfg, st, "/api/orders/12345", "bob", "user", http.StatusOK, `{"user_id":"alice","amount":10}`)
+	if len(st.forensic) != 1 || st.forensic[0].Reason != "bola_object_ownership" {
+		t.Fatalf("expected 1 confirmed IDOR event, got %+v", st.forensic)
+	}
+	if st.forensic[0].Extra["severity"] != "critical" || st.forensic[0].Extra["confirmed"] != true {
+		t.Fatalf("confirmed event = %+v, want critical/confirmed", st.forensic[0].Extra)
+	}
+	if len(st.setOwners) != 1 || st.setOwners[0] != "alice" {
+		t.Fatalf("owner binding = %v, want [alice]", st.setOwners)
+	}
+}
+
+// Confirmed path, owner matches caller: bind the owner, do not flag.
+func TestBOLAOwnership_ConfirmedOwnerMatchesNotFlagged(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user_id"}
+	st := &fakeStore{}
+	_ = runAbuseBody(cfg, st, "/api/orders/12345", "alice", "user", http.StatusOK, `{"user_id":"alice"}`)
+	if len(st.forensic) != 0 {
+		t.Fatalf("owner reading own object must not flag, got %+v", st.forensic)
+	}
+	if len(st.setOwners) != 1 || st.setOwners[0] != "alice" {
+		t.Fatalf("owner binding = %v, want [alice]", st.setOwners)
+	}
+}
+
+// Proactive block: a known confirmed owner different from the caller is denied
+// BEFORE forwarding (prevents the leak, not just records it).
+func TestBOLAOwnership_BlockKnownCrossOwner(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.ObjectOwnershipBlock = true
+	st := &fakeStore{getOwner: func() (string, bool, error) { return "alice", true, nil }}
+	rec := runAbuseStatus(cfg, st, http.MethodGet, "/api/orders/12345", "bob", "user", http.StatusOK)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("known cross-owner access: got %d, want 403", rec.Code)
+	}
+}
+
+// The confirmed owner reaching their own object is not blocked.
+func TestBOLAOwnership_BlockAllowsRealOwner(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.ObjectOwnershipBlock = true
+	cfg.OwnerFields = []string{"user_id"}
+	st := &fakeStore{getOwner: func() (string, bool, error) { return "alice", true, nil }}
+	rec := runAbuseBody(cfg, st, "/api/orders/12345", "alice", "user", http.StatusOK, `{"user_id":"alice"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("real owner must not be blocked: got %d", rec.Code)
+	}
+}
+
+// runAbuseBodyID adds a propagated X-Gateway-Identity (the ownership claim), so
+// ownership comparison against a non-subject identity can be exercised.
+func runAbuseBodyID(cfg config.AbuseConfig, st Store, path, subject, identity, roles string, status int, body string) *httptest.ResponseRecorder {
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	})
+	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.RemoteAddr = "1.2.3.4:1"
+	if subject != "" {
+		r.Header.Set("X-Gateway-Subject", subject)
+	}
+	if identity != "" {
+		r.Header.Set("X-Gateway-Identity", identity)
+	}
+	if roles != "" {
+		r.Header.Set("X-Gateway-Roles", roles)
+	}
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// Ownership compares against the propagated identity claim, NOT the subject: the
+// caller's sub is an email but its id (identity) is 42, and it reads its own
+// object (user_id=42) — must not flag even though sub != user_id.
+func TestBOLAOwnership_IdentityClaimOwnerMatch(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user_id"}
+	st := &fakeStore{}
+	_ = runAbuseBodyID(cfg, st, "/api/orders/1", "bob@example.com", "42", "user", http.StatusOK, `{"user_id":"42"}`)
+	if len(st.forensic) != 0 {
+		t.Fatalf("owner-by-identity must not flag, got %+v", st.forensic)
+	}
+	if len(st.setOwners) != 1 || st.setOwners[0] != "42" {
+		t.Fatalf("owner binding = %v, want [42]", st.setOwners)
+	}
+}
+
+// Same setup, but the object belongs to 42 while the caller's identity is 43 — a
+// confirmed IDOR, decided against the identity claim (not the email subject).
+func TestBOLAOwnership_IdentityClaimCrossOwner(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user_id"}
+	st := &fakeStore{}
+	_ = runAbuseBodyID(cfg, st, "/api/orders/1", "carol@example.com", "43", "user", http.StatusOK, `{"user_id":"42"}`)
+	if len(st.forensic) != 1 || st.forensic[0].Extra["severity"] != "critical" {
+		t.Fatalf("cross-owner by identity must flag critical, got %+v", st.forensic)
+	}
+}
+
+// A bypass role (support/admin) is allowed to see others' objects.
+func TestBOLAOwnership_BypassRoleSkips(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user_id"}
+	cfg.OwnershipBypassRoles = []string{"admin"}
+	st := &fakeStore{}
+	_ = runAbuseBody(cfg, st, "/api/orders/12345", "bob", "admin", http.StatusOK, `{"user_id":"alice"}`)
+	if len(st.forensic) != 0 {
+		t.Fatalf("bypass role must not flag, got %+v", st.forensic)
+	}
+}
+
+// The legitimate owner re-reading its own object must never flag.
+func TestBOLAOwnership_OwnAccessNotFlagged(t *testing.T) {
+	st := &fakeStore{trackOwner: func() (int64, bool, error) { return 1, true, nil }} // alreadyOwned
+	_ = runAbuseStatus(ownershipCfg(), st, http.MethodGet, "/api/orders/12345", "alice", "user", http.StatusOK)
+	if len(st.forensic) != 0 {
+		t.Fatalf("owner re-access must not flag, got %+v", st.forensic)
+	}
+}
+
+// A broadly shared/public object (many prior owners) is not an ownership signal.
+func TestBOLAOwnership_SharedObjectNotFlagged(t *testing.T) {
+	st := &fakeStore{trackOwner: func() (int64, bool, error) { return 10, false, nil }} // > SharedObjectThreshold
+	_ = runAbuseStatus(ownershipCfg(), st, http.MethodGet, "/api/orders/12345", "bob", "user", http.StatusOK)
+	if len(st.forensic) != 0 {
+		t.Fatalf("shared object must not flag, got %+v", st.forensic)
+	}
+}
+
+// The killer discriminator: a cross-owner access the BACKEND denied (4xx) means
+// authorization was enforced — not a leak — so it must NOT flag.
+func TestBOLAOwnership_BackendDeniedNotFlagged(t *testing.T) {
+	st := &fakeStore{trackOwner: func() (int64, bool, error) { return 1, false, nil }}
+	_ = runAbuseStatus(ownershipCfg(), st, http.MethodGet, "/api/orders/12345", "bob", "user", http.StatusForbidden)
+	if len(st.forensic) != 0 {
+		t.Fatalf("backend-denied (403) cross access must not flag, got %+v", st.forensic)
+	}
+}
+
+// Anonymous callers (no verified subject) are too noisy to attribute ownership.
+func TestBOLAOwnership_AnonymousSkipped(t *testing.T) {
+	st := &fakeStore{trackOwner: func() (int64, bool, error) { return 1, false, nil }}
+	_ = runAbuseStatus(ownershipCfg(), st, http.MethodGet, "/api/orders/12345", "", "", http.StatusOK)
+	if len(st.forensic) != 0 {
+		t.Fatalf("anonymous access must not flag ownership, got %+v", st.forensic)
+	}
+}
+
 func TestExtractObjectIDs(t *testing.T) {
 	got := extractObjectIDs("/api/v1/users/42/orders/100", "/api/v1/users/{id}/orders/{id}")
 	want := []string{"42", "100"}

@@ -142,11 +142,22 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       security; without it the product reads as "another WAF". Implemented in
       `middleware.AbuseDetection` (wired after JWT so it sees verified roles):
       **BFLA** flags a consumer hitting a privileged path prefix without any
-      required role; **BOLA/IDOR** flags object-ID enumeration via per-consumer/
-      endpoint distinct-ID counts (`store.TrackObjectAccess`) against both a hard
-      `enum_threshold` ceiling and an adaptive per-consumer EWMA baseline
-      (`store.TrackBaseline`, A2). Detect-only or block mode, with an allowlist
-      for known high-cardinality callers and explainable `why` on every event.
+      required role; **BOLA/IDOR** is caught two ways: (1) **enumeration** via
+      per-consumer/endpoint distinct-ID counts (`store.TrackObjectAccess`) against
+      both a hard `enum_threshold` ceiling and an adaptive per-consumer EWMA
+      baseline (`store.TrackBaseline`, A2); (2) **single-object IDOR**
+      (`object_ownership`) — learns which consumers own which objects
+      (`store.TrackObjectOwner`) and flags a consumer that **successfully (2xx)**
+      reads an object owned by a different, small set of consumers and never
+      accessed by it. Evaluated after the response so a backend 4xx (authorization
+      enforced) is correctly NOT flagged — the one-object leak that enumeration and
+      signature WAFs miss. **Confirmed ownership**: with `owner_fields` set, the
+      object's true owner is read from the response body and compared to the
+      authenticated subject (heuristic warning → confirmed critical), and that
+      binding (`store.SetObjectOwner`/`GetObjectOwner`) lets `object_ownership_block`
+      **deny a known cross-owner access before forwarding** — preventing the leak,
+      not just recording it; `ownership_bypass_roles` exempt support/admin. With an
+      allowlist for known high-cardinality callers and explainable `why` on every event.
 - [~] **SIEM integration** (Splunk / Elastic) and **alerting** (Slack / PagerDuty)
       with configurable webhooks. Done: `alerting` config block (webhook URL,
       `generic`/`slack` payload format, `min_severity` gate); `AEGIS_ALERT_WEBHOOK_URL`
@@ -240,10 +251,20 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       (fail-open) with **p99 864 ms / max 1.30 s** — bounded by the fail-fast
       Redis timeouts (dial 1s / read-write 500ms / 1 retry), vs the 3–9 s hangs
       the go-redis defaults would cause; latency snapped back to p99 42 ms on
-      recovery. PostgreSQL-unavailable is partially covered (catalog → 503,
-      `catalog_nil_test.go`; forensic falls back to the Redis ring buffer).
-      Still to do: capacity sweep for published max-RPS, PG-outage-under-load,
-      and a rolling-update drain (zero-5xx during `Shutdown`).
+      recovery. **PostgreSQL-outage under load** now covered on a live stand
+      (`tests/load/reliability-results-2026-07-08.md`): at 100 rps with PG killed
+      mid-run the data plane held **100% success with flat latency** (p99 11 ms
+      through the outage) — the async catalog/forensic path is decoupled from
+      proxied traffic; the admin catalog read degrades and self-recovers. **Rolling
+      -update drain** covered in the same run: **zero 5xx** during `Shutdown`, and
+      a new lame-duck grace (`shutdown_drain`: `/readyz` → 503 → serve → drain →
+      stop) turns a post-SIGTERM burst of connection errors into zero-downtime
+      rollouts behind a readiness-gated LB (601/1200 drain-window requests now
+      succeed vs 0 before). Regression: `internal/api` readyz-draining tests.
+      Admin read handlers now return **503** (not 500) when the backing store is
+      unreachable, so clients/LBs back off correctly (`storeUnavailable`
+      classifier, `TestStoreUnavailable_Classifies`). Still to do: capacity sweep
+      for published max-RPS (needs dedicated hardware, not Docker Desktop).
 
 ### P1
 - [x] High-availability guide (`docs/runbooks/ha.md`): topology (Sentinel + PG

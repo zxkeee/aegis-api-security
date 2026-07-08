@@ -59,6 +59,14 @@ type GatewayConfig struct {
 	// differ from the data-plane API origins — sharing one list would otherwise
 	// let every customer web-app origin make credentialed admin-API requests.
 	AdminCORS *CORSConfig `yaml:"admin_cors"`
+	// ShutdownDrain is the lame-duck grace period on SIGTERM/SIGINT: the gateway
+	// first flips /readyz to 503 (so a load balancer / k8s readiness probe stops
+	// routing new traffic), waits this long while still serving established
+	// connections, and only then drains in-flight requests and stops. 0 (default)
+	// skips the grace and shuts down immediately — set a few seconds in production
+	// so rolling updates cause zero connection errors. Must exceed the LB's
+	// readiness probe period.
+	ShutdownDrain time.Duration `yaml:"shutdown_drain"`
 	// RequireTLS makes startup fail unless TLS is terminated at the gateway
 	// (tls.enabled). Set it in production. Leave false only when TLS is terminated
 	// by a trusted upstream (ingress / load balancer) in front of AEGIS.
@@ -256,6 +264,14 @@ type AuthConfig struct {
 	// deployments where a backing-store outage must not let a revoked token slip
 	// through. Mirrors the per-control fail_closed convention used elsewhere.
 	RevocationFailClosed bool `yaml:"revocation_fail_closed"`
+	// IdentityClaim names an additional JWT claim to propagate as the caller's
+	// object-ownership identity (header X-Gateway-Identity), for BOLA ownership
+	// detection when the resource owner in the response body is NOT the JWT
+	// subject. Example: tokens carry sub=<email> but resources are owned by a
+	// numeric user id in claim "uid" and field "user_id" — set identity_claim:
+	// "uid" and abuse.owner_fields: ["user_id"] so the two compare. When unset,
+	// ownership compares against sub.
+	IdentityClaim string `yaml:"identity_claim"`
 }
 
 type WAFConfig struct {
@@ -263,6 +279,19 @@ type WAFConfig struct {
 	RulesetPath string   `yaml:"ruleset_path"`
 	BlockMode   bool     `yaml:"block_mode"`
 	Exclude     []string `yaml:"exclude_paths"`
+	// UseCRS loads the full OWASP Core Rule Set (v4, ~900 rules with anomaly
+	// scoring) via Coraza instead of the built-in starter rules — the
+	// production-grade ruleset. Tune with ParanoiaLevel and AnomalyThreshold, and
+	// start in detection (block_mode: false) to surface false positives on your
+	// traffic before enforcing. A RulesetPath, when set, is included after CRS as
+	// tenant overrides (e.g. rule exclusions).
+	UseCRS bool `yaml:"use_crs"`
+	// ParanoiaLevel (1–4) trades coverage for false positives: 1 (default) suits
+	// most APIs; higher levels catch more attacks but flag more benign traffic.
+	ParanoiaLevel int `yaml:"paranoia_level"`
+	// AnomalyThreshold is the inbound anomaly score at which CRS blocks (default
+	// 5). Raise to be more permissive, lower to be stricter. Only used with CRS.
+	AnomalyThreshold int `yaml:"anomaly_threshold"`
 }
 
 type BotConfig struct {
@@ -366,6 +395,43 @@ type AbuseConfig struct {
 	// fires, so a tiny baseline (e.g. 0.5) cannot flag a benign handful of objects
 	// (default 8).
 	AdaptiveMinObjects int `yaml:"adaptive_min_objects"`
+	// ObjectOwnership enables single-object BOLA / IDOR detection. Enumeration
+	// detection only catches a consumer sweeping MANY object IDs; this catches a
+	// consumer that reads ONE object belonging to someone else — the classic IDOR
+	// a signature WAF cannot see. It learns which consumers access which objects
+	// and flags a consumer that SUCCESSFULLY (2xx) reads an object previously
+	// owned by a different, small set of consumers and never accessed by it. It is
+	// evaluated AFTER the response (so a 2xx confirms the object was actually
+	// returned to the wrong caller) and is therefore detect-only, regardless of
+	// BlockMode. Only applies to authenticated subjects (anonymous ip:-identities
+	// are too noisy to attribute ownership).
+	ObjectOwnership bool `yaml:"object_ownership"`
+	// SharedObjectThreshold bounds ownership detection to genuinely owned objects:
+	// an object already accessed by MORE than this many distinct consumers is
+	// treated as shared/public and never flagged (default 2). Lower is stricter.
+	SharedObjectThreshold int `yaml:"shared_object_threshold"`
+	// ObjectOwnershipTTL is how long an object's owner set is retained (default
+	// 168h / 7 days). Keep it long relative to Window so ownership reflects a
+	// durable access pattern, not a single burst.
+	ObjectOwnershipTTL time.Duration `yaml:"object_ownership_ttl"`
+	// OwnerFields upgrades ownership detection from heuristic (first-accessor) to
+	// CONFIRMED: the response body is parsed for one of these JSON fields (checked
+	// top-level and under a "data" wrapper), and its value is the object's true
+	// owner. The owner is compared to the authenticated subject
+	// (X-Gateway-Subject), so configure these to the field(s) that hold the
+	// caller's own id (e.g. "user_id", "owner_id", "account_id"). When a value is
+	// found, it supersedes the first-accessor heuristic for that request. Empty =
+	// heuristic only.
+	OwnerFields []string `yaml:"owner_fields"`
+	// ObjectOwnershipBlock denies a request BEFORE forwarding when the object's
+	// confirmed owner (learned earlier from a response body via OwnerFields) is
+	// known and differs from the caller — preventing the leak instead of only
+	// recording it. Requires OwnerFields to populate owner bindings first.
+	ObjectOwnershipBlock bool `yaml:"object_ownership_block"`
+	// OwnershipBypassRoles are roles allowed to access objects they do not own
+	// (support/admin views); a consumer holding any of them skips ownership
+	// detection and blocking entirely.
+	OwnershipBypassRoles []string `yaml:"ownership_bypass_roles"`
 }
 
 // PrivilegedRule binds a path prefix to the roles allowed to call it.
@@ -517,6 +583,17 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 // Validate returns an error if the configuration is unsafe to run in production.
 // Call this after Load() before starting any servers.
 func Validate(cfg GatewayConfig) error {
+	if cfg.ShutdownDrain < 0 {
+		return errors.New("shutdown_drain must not be negative")
+	}
+	if cfg.Security.WAF.UseCRS {
+		if pl := cfg.Security.WAF.ParanoiaLevel; pl != 0 && (pl < 1 || pl > 4) {
+			return fmt.Errorf("waf.paranoia_level must be 1-4 (got %d)", pl)
+		}
+		if cfg.Security.WAF.AnomalyThreshold < 0 {
+			return errors.New("waf.anomaly_threshold must not be negative")
+		}
+	}
 	if err := validateAdminSecret(cfg); err != nil {
 		return err
 	}

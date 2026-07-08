@@ -35,8 +35,7 @@ func (h *handlers) getAudit(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := h.audit.List(r.Context(), f)
 	if err != nil {
-		h.log.Error("admin: audit list failed", map[string]any{"error": err.Error()})
-		writeError(w, http.StatusInternalServerError, "failed to fetch audit log")
+		h.writeStoreError(w, "admin: audit list failed", "failed to fetch audit log", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "count": len(entries)})

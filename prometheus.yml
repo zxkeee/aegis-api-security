@@ -7,7 +7,10 @@ scrape_configs:
       - targets: ['gateway:8081']
     metrics_path: '/metrics'
     scrape_interval: 10s
-    # AEGIS admin plane requires auth; supply the admin secret as a bearer token.
-    # authorization:
-    #   type: Bearer
-    #   credentials: '<AEGIS_ADMIN_SECRET>'
+    # The AEGIS admin plane requires auth. The bearer token is the admin secret,
+    # written to this file at container start from $AEGIS_ADMIN_SECRET (see the
+    # prometheus service entrypoint in docker-compose.yml) so the secret never
+    # lives in this tracked config.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/admin_token

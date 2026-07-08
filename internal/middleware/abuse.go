@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +56,14 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 	for _, c := range cfg.Allowlist {
 		if c = strings.TrimSpace(c); c != "" {
 			allow[c] = true
+		}
+	}
+
+	// Response-body owner fields (confirmed ownership). Cleaned once.
+	ownerFields := make([]string, 0, len(cfg.OwnerFields))
+	for _, f := range cfg.OwnerFields {
+		if f = strings.TrimSpace(f); f != "" {
+			ownerFields = append(ownerFields, f)
 		}
 	}
 
@@ -170,9 +180,209 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 				}
 			}
 
+			// ── BOLA (object ownership): single-object IDOR ────────────────────
+			// The enumeration check above needs MANY IDs to fire; this catches the
+			// one-object case: a consumer reading a single object it does not own.
+			// Only authenticated subjects qualify (an "ip:" identity is too unstable
+			// under NAT/DHCP to attribute ownership); consumers holding a bypass role
+			// (support/admin) are allowed to see others' objects.
+			bypassed := len(cfg.OwnershipBypassRoles) > 0 && hasAnyRole(roles, cfg.OwnershipBypassRoles)
+			if (cfg.ObjectOwnership || cfg.ObjectOwnershipBlock) && subject != "" && len(ids) > 0 && !bypassed {
+				ownTTL := cfg.ObjectOwnershipTTL
+				if ownTTL <= 0 {
+					ownTTL = 168 * time.Hour
+				}
+				// The identity compared against the object's owner. Prefer the
+				// propagated ownership claim (X-Gateway-Identity, set by JWT auth from
+				// auth.identity_claim) so ownership works when the resource owner is not
+				// the JWT subject; fall back to the subject when no claim is configured.
+				identity := r.Header.Get("X-Gateway-Identity")
+				if identity == "" {
+					identity = subject
+				}
+
+				// Proactive block (before forwarding): if an object's confirmed owner
+				// is already known and is someone else, deny the leak up front.
+				if cfg.ObjectOwnershipBlock {
+					for _, id := range ids {
+						owner, known, err := st.GetObjectOwner(r.Context(), endpoint, id)
+						if err != nil {
+							log.Error("abuse: object-owner lookup failed", map[string]any{"error": err.Error()})
+							continue
+						}
+						if known && owner != "" && owner != identity {
+							SecurityDeny(w, r, log, st, "bola_owner_block", ip, http.StatusForbidden, map[string]any{
+								"consumer":  consumer,
+								"object_id": id,
+								"endpoint":  endpoint,
+								"owner":     owner,
+								"severity":  "critical",
+								"why": "consumer '" + consumer + "' denied object '" + id + "' on '" + endpoint +
+									"' owned by '" + owner + "' — cross-owner access (BOLA) blocked before forwarding",
+							})
+							return
+						}
+					}
+				}
+
+				if !cfg.ObjectOwnership {
+					next.ServeHTTP(w, r)
+					return
+				}
+
+				// Post-response: confirm ownership from the body (if OwnerFields is
+				// configured) or fall back to the first-accessor heuristic. Evaluated
+				// after the response so a 2xx confirms the object was actually returned
+				// (a 4xx means the backend enforced authorization — not a leak).
+				cw := &captureWriter{ResponseWriter: w, status: http.StatusOK}
+				next.ServeHTTP(cw, r)
+				if cw.status < 200 || cw.status >= 300 {
+					return
+				}
+
+				var bodyOwner string
+				if len(ownerFields) > 0 {
+					bodyOwner = extractOwner(cw.buf, ownerFields)
+				}
+
+				if bodyOwner != "" {
+					// CONFIRMED path: the response body names the object's owner. Bind
+					// it (so future cross-owner requests are blocked) and, if it is not
+					// the caller, flag a confirmed IDOR — a real data leak, "critical".
+					objID := ids[len(ids)-1]
+					if err := st.SetObjectOwner(r.Context(), endpoint, objID, bodyOwner, ownTTL); err != nil {
+						log.Error("abuse: set object-owner failed", map[string]any{"error": err.Error()})
+					}
+					if bodyOwner != identity {
+						recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
+							"consumer":  consumer,
+							"object_id": objID,
+							"endpoint":  endpoint,
+							"owner":     bodyOwner,
+							"confirmed": true,
+							"severity":  "critical",
+							"why": "consumer '" + consumer + "' received object '" + objID + "' on '" + endpoint +
+								"' owned by '" + bodyOwner + "' (from response body) — confirmed IDOR (BOLA)",
+						})
+					}
+					return
+				}
+
+				// HEURISTIC fallback: first-accessor ownership affinity.
+				shared := cfg.SharedObjectThreshold
+				if shared <= 0 {
+					shared = 2
+				}
+				for _, id := range ids {
+					prior, already, err := st.TrackObjectOwner(r.Context(), endpoint, id, consumer, ownTTL)
+					if err != nil {
+						log.Error("abuse: object-owner tracking failed", map[string]any{"error": err.Error()})
+						continue
+					}
+					if !already && prior >= 1 && int(prior) <= shared {
+						recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
+							"consumer":     consumer,
+							"object_id":    id,
+							"endpoint":     endpoint,
+							"prior_owners": prior,
+							"severity":     "warning",
+							"why": "consumer '" + consumer + "' read object '" + id + "' on '" + endpoint +
+								"' owned by " + strconv.FormatInt(prior, 10) +
+								" other consumer(s) and never accessed by it — possible IDOR (BOLA, heuristic)",
+						})
+					}
+				}
+				return
+			}
+
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// ownerBodyCap bounds how much of a JSON response body is buffered for owner
+// extraction, so a large payload cannot blow up memory on the hot path.
+const ownerBodyCap = 64 * 1024
+
+// captureWriter tees the response through unchanged while copying up to
+// ownerBodyCap bytes of a JSON body for owner extraction. It never delays or
+// rewrites the response; non-JSON bodies are not buffered. Flush (SSE) and
+// Hijack (WebSocket) reach the real connection via Unwrap.
+type captureWriter struct {
+	http.ResponseWriter
+	status  int
+	buf     []byte
+	capture int // 0 = undecided, 1 = capturing JSON, -1 = skip
+}
+
+func (c *captureWriter) WriteHeader(code int) {
+	c.status = code
+	c.decide()
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *captureWriter) decide() {
+	if c.capture != 0 {
+		return
+	}
+	if strings.HasPrefix(c.Header().Get("Content-Type"), "application/json") {
+		c.capture = 1
+	} else {
+		c.capture = -1
+	}
+}
+
+func (c *captureWriter) Write(b []byte) (int, error) {
+	c.decide()
+	if c.capture == 1 && len(c.buf) < ownerBodyCap {
+		room := ownerBodyCap - len(c.buf)
+		if room > len(b) {
+			room = len(b)
+		}
+		c.buf = append(c.buf, b[:room]...)
+	}
+	return c.ResponseWriter.Write(b)
+}
+
+func (c *captureWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
+
+// extractOwner parses a JSON body and returns the value of the first matching
+// owner field, checked at the top level and under a "data" wrapper (a common API
+// envelope). Numbers keep exact precision (json.Number), so integer IDs compare
+// cleanly against the subject.
+func extractOwner(body []byte, fields []string) string {
+	if len(body) == 0 {
+		return ""
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return ""
+	}
+	if v := ownerFromMap(m, fields); v != "" {
+		return v
+	}
+	if d, ok := m["data"].(map[string]any); ok {
+		return ownerFromMap(d, fields)
+	}
+	return ""
+}
+
+func ownerFromMap(m map[string]any, fields []string) string {
+	for _, f := range fields {
+		if v, ok := m[f]; ok {
+			switch t := v.(type) {
+			case string:
+				return t
+			case json.Number:
+				return t.String()
+			case bool:
+				return strconv.FormatBool(t)
+			}
+		}
+	}
+	return ""
 }
 
 // recordAbuse logs an abuse event and persists it to forensics WITHOUT denying

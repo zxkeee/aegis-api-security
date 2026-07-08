@@ -31,6 +31,13 @@ admin_cookie_insecure: false
 # in production; leave false only when a trusted upstream terminates TLS.
 require_tls: false
 
+# shutdown_drain is the lame-duck grace on SIGTERM: /readyz flips to 503 (so the
+# load balancer / k8s readiness probe drains this instance) while established
+# connections keep being served, then in-flight requests finish and the gateway
+# stops. Set it a few seconds above your LB's readiness probe period so rolling
+# updates cause zero connection errors. 0 shuts down immediately (no grace).
+shutdown_drain: 5s
+
 # Trusted reverse-proxy IPs or CIDRs.
 # Only connections from these addresses will have X-Forwarded-For trusted.
 # List the EXACT IPs of your load balancers / ingress nodes — broad private
@@ -112,6 +119,12 @@ security:
     secret: ""
     issuer: ""
     audience: ""
+    # identity_claim propagates an extra JWT claim as the caller's object-owner
+    # identity (X-Gateway-Identity) for BOLA ownership detection when the resource
+    # owner is not the subject. E.g. sub is an email but resources are owned by a
+    # numeric id in claim "uid" and body field "user_id": set identity_claim "uid"
+    # and abuse.owner_fields ["user_id"]. Empty = ownership compares against sub.
+    identity_claim: ""
     # Deny requests when the JTI-revocation lookup fails (e.g. Redis outage).
     # false (default) fails open to preserve availability; true is the
     # high-assurance choice where a revoked token must never slip through.
@@ -124,8 +137,15 @@ security:
 
   waf:
     enabled: true
-    ruleset_path: ""
+    ruleset_path: ""      # optional extra directives, included last (e.g. rule exclusions)
     block_mode: true
+    # use_crs loads the full OWASP Core Rule Set v4 (~900 rules, anomaly scoring)
+    # instead of the built-in starter rules — the production-grade choice. Roll it
+    # out in monitor first (block_mode: false = detect + log, no blocking), tune
+    # false positives via ruleset_path (SecRuleRemoveById ...), then enforce.
+    use_crs: false
+    paranoia_level: 1     # 1-4: higher catches more, flags more benign traffic
+    anomaly_threshold: 5  # inbound score at which CRS blocks (lower = stricter)
 
   bot:
     enabled: true
@@ -179,12 +199,25 @@ security:
   # identity/roles. Detect-only by default (records events without blocking).
   abuse:
     enabled: false
-    enum_threshold: 50   # distinct object IDs per consumer/endpoint in window -> BOLA
+    enum_threshold: 50   # distinct object IDs per consumer/endpoint in window -> BOLA (enumeration)
     window: 60s
     block_mode: false    # true = deny flagged requests
     privileged: []       # BFLA rules, e.g.:
       # - path: "/admin/"
       #   required_roles: ["admin"]
+    # Single-object BOLA / IDOR: flags a consumer that SUCCESSFULLY (2xx) reads an
+    # object owned by someone else — the one-object leak enumeration cannot catch.
+    # Detect-only (needs the response status to confirm the leak).
+    object_ownership: false
+    shared_object_threshold: 2    # objects with more distinct owners are treated as shared/public
+    object_ownership_ttl: 168h    # how long an object's owner set is remembered (7 days)
+    # owner_fields upgrades detection from heuristic (first-accessor) to CONFIRMED:
+    # the response body is parsed for one of these JSON fields (top-level or under
+    # a "data" wrapper) and its value is the object's true owner, compared to the
+    # authenticated subject. Set these to the field(s) holding the caller's own id.
+    owner_fields: []              # e.g. ["user_id", "owner_id", "account_id"]
+    object_ownership_block: false # deny a KNOWN cross-owner access before forwarding (needs owner_fields)
+    ownership_bypass_roles: []    # roles allowed to see others' objects, e.g. ["admin", "support"]
 
   # Positive-security schema enforcement: validate each request against the
   # documented OpenAPI/Swagger contract (discovery.spec_path) and reject what the

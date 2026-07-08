@@ -332,6 +332,18 @@ func main() {
 
 	log.Info("shutdown signal received", map[string]any{"signal": sig.String()})
 
+	// Lame-duck grace: flip /readyz to 503 so an upstream load balancer / k8s
+	// readiness probe removes this instance from rotation, then keep serving
+	// established connections for the grace period before we stop accepting new
+	// ones. Without it, closing the listener on SIGTERM races the LB and every
+	// rolling update sheds a burst of connection errors.
+	if cfg.ShutdownDrain > 0 {
+		adminSrv.SetDraining(true)
+		log.Info("lame-duck: /readyz now 503, draining before shutdown",
+			map[string]any{"grace": cfg.ShutdownDrain.String()})
+		time.Sleep(cfg.ShutdownDrain)
+	}
+
 	// Stop the retention sweep BEFORE the deferred rw.Close() runs, so an
 	// in-flight sweep is cancelled while its connection pool is still open
 	// (cancel-then-close, not the reverse the defer order would give).
