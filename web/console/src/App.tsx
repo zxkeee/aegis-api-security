@@ -7,6 +7,7 @@ import { Catalog } from "@/pages/Catalog";
 import { Consumers } from "@/pages/Consumers";
 import { Findings } from "@/pages/Findings";
 import { Forensics } from "@/pages/Forensics";
+import { Graph } from "@/pages/Graph";
 import { Login } from "@/pages/Login";
 import { Overview } from "@/pages/Overview";
 import { Posture } from "@/pages/Posture";
@@ -19,6 +20,7 @@ const PAGES: Record<string, React.ComponentType> = {
   posture: Posture,
   findings: Findings,
   consumers: Consumers,
+  map: Graph,
   forensics: Forensics,
   access: Access,
 };

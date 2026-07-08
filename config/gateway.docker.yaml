@@ -47,6 +47,10 @@ security:
     allow_headers: ["Content-Type", "Authorization", "X-CSRF-Token"]
   api_inventory:
     enabled: true
+  abuse:
+    enabled: true
+    enum_threshold: 20
+    window: 120s
 
 # A demo route so traffic to :8080 populates the discovery catalog. Point it at
 # any reachable backend; httpbin echoes and 200s so the catalog fills quickly.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/store"
 )
 
 // catalogReady guards catalog endpoints when discovery is disabled (no DSN).
@@ -70,6 +71,68 @@ func (h *handlers) getConsumers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"consumers": consumers, "count": len(consumers)})
+}
+
+// GET /api/graph?limit= — the consumer→endpoint access map for the dashboard
+// visualisation (who calls what, where risk/PII concentrates).
+func (h *handlers) getGraph(w http.ResponseWriter, r *http.Request) {
+	if !h.catalogReady(w) {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	g, err := h.catalog.Graph(r.Context(), limit)
+	if err != nil {
+		h.writeStoreError(w, "admin: graph failed", "failed to build graph", err)
+		return
+	}
+	// Enrich with authorization-abuse signal: flag nodes that appear in recent
+	// BOLA/BFLA/IDOR events so the map shows who/what is under active abuse. The
+	// forensic feed is best-effort — a failure to read it must not fail the graph.
+	if entries, ferr := h.store.GetForensicLog(r.Context(), 300); ferr == nil {
+		flagAbuseNodes(&g, entries)
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
+// flagAbuseNodes marks graph nodes that appear in recent abuse events. Endpoints
+// match by "METHOD /normalized-path" (deterministic, shared with the catalog);
+// consumers match the event's `consumer` field against the node's id/label
+// (exact for ip:, suffix for jwt:<sub>).
+func flagAbuseNodes(g *discovery.Graph, entries []store.ForensicEntry) {
+	epHits := map[string]int{}  // endpoint label -> count
+	conHits := map[string]int{} // consumer identity -> count
+	for _, e := range entries {
+		if !isAbuseReason(e.Reason) {
+			continue
+		}
+		epHits[e.Method+" "+discovery.NormalizePath(e.Path)]++
+		if c, ok := e.Extra["consumer"].(string); ok && c != "" {
+			conHits[c]++
+		}
+	}
+	if len(epHits) == 0 && len(conHits) == 0 {
+		return
+	}
+	for i := range g.Nodes {
+		n := &g.Nodes[i]
+		if n.Type == "endpoint" {
+			if c := epHits[n.Label]; c > 0 {
+				n.Flagged, n.AbuseCount = true, c
+			}
+			continue
+		}
+		id := strings.TrimPrefix(n.ID, "consumer:")
+		for c, cnt := range conHits {
+			if c == id || c == n.Label || strings.HasSuffix(id, ":"+c) {
+				n.Flagged = true
+				n.AbuseCount += cnt
+			}
+		}
+	}
+}
+
+func isAbuseReason(reason string) bool {
+	return strings.HasPrefix(reason, "bola") || strings.HasPrefix(reason, "bfla")
 }
 
 // GET /api/posture/summary

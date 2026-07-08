@@ -96,6 +96,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/catalog", h.getCatalog)
 	s.mux.HandleFunc("GET /api/catalog/{id}", h.getCatalogEndpoint)
 	s.mux.HandleFunc("GET /api/consumers", h.getConsumers)
+	s.mux.HandleFunc("GET /api/graph", h.getGraph)
 	s.mux.HandleFunc("GET /api/posture/summary", h.getPostureSummary)
 	s.mux.HandleFunc("GET /api/effectiveness", h.getEffectiveness)
 	s.mux.HandleFunc("GET /api/findings", h.getFindings)
