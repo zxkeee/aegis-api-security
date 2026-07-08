@@ -72,6 +72,21 @@ func (h *handlers) getConsumers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"consumers": consumers, "count": len(consumers)})
 }
 
+// GET /api/graph?limit= — the consumer→endpoint access map for the dashboard
+// visualisation (who calls what, where risk/PII concentrates).
+func (h *handlers) getGraph(w http.ResponseWriter, r *http.Request) {
+	if !h.catalogReady(w) {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	g, err := h.catalog.Graph(r.Context(), limit)
+	if err != nil {
+		h.writeStoreError(w, "admin: graph failed", "failed to build graph", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
 // GET /api/posture/summary
 func (h *handlers) getPostureSummary(w http.ResponseWriter, r *http.Request) {
 	if !h.catalogReady(w) {

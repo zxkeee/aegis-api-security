@@ -219,3 +219,58 @@ func TestPG_CatalogEndToEnd(t *testing.T) {
 		t.Fatal("ListEndpoints should enrich with live controls")
 	}
 }
+
+func TestPG_GraphData(t *testing.T) {
+	s := freshStore(t)
+	ctx := context.Background()
+
+	// Two endpoints (one PII/unprotected), two consumers, three edges.
+	if err := s.upsertEndpoint(ctx, &epAgg{tenant: "default", id: "ep_orders", method: "GET", pathTemplate: "/orders/{id}", requestCount: 10, posture: "unprotected", riskScore: 80, piiCount: 3, statusDist: map[int]int64{}}); err != nil {
+		t.Fatalf("upsertEndpoint orders: %v", err)
+	}
+	_ = s.upsertEndpoint(ctx, &epAgg{tenant: "default", id: "ep_health", method: "GET", pathTemplate: "/health", requestCount: 2, posture: "protected", statusDist: map[int]int64{}})
+	_ = s.upsertConsumer(ctx, &consumerAgg{tenant: "default", id: "jwt:alice", kind: "jwt", label: "alice", requestCount: 8})
+	_ = s.upsertConsumer(ctx, &consumerAgg{tenant: "default", id: "ip:1.2.3.4", kind: "ip", label: "ip:1.2.3.4", requestCount: 4})
+	_ = s.upsertEndpointConsumer(ctx, "default", "ep_orders", "jwt:alice", 8)
+	_ = s.upsertEndpointConsumer(ctx, "default", "ep_orders", "ip:1.2.3.4", 2)
+	_ = s.upsertEndpointConsumer(ctx, "default", "ep_health", "ip:1.2.3.4", 2)
+
+	g, err := s.graphData(ctx, "default", 100)
+	if err != nil {
+		t.Fatalf("graphData: %v", err)
+	}
+	if len(g.Edges) != 3 {
+		t.Fatalf("edges = %d, want 3", len(g.Edges))
+	}
+	if len(g.Nodes) != 4 { // 2 endpoints + 2 consumers
+		t.Fatalf("nodes = %d, want 4", len(g.Nodes))
+	}
+
+	var orders *GraphNode
+	for i := range g.Nodes {
+		if g.Nodes[i].ID == "endpoint:ep_orders" {
+			orders = &g.Nodes[i]
+		}
+	}
+	if orders == nil {
+		t.Fatal("orders endpoint node missing")
+	}
+	if orders.Type != "endpoint" || !orders.PII || orders.Posture != "unprotected" || orders.Method != "GET" {
+		t.Fatalf("orders node = %+v", *orders)
+	}
+	// Edge endpoints are type-prefixed so they resolve to nodes.
+	for _, e := range g.Edges {
+		if len(e.Source) < 9 || e.Source[:9] != "consumer:" || len(e.Target) < 9 || e.Target[:9] != "endpoint:" {
+			t.Fatalf("edge not type-prefixed: %+v", e)
+		}
+	}
+
+	// Cross-tenant isolation: another tenant sees an empty graph.
+	g2, err := s.graphData(ctx, "globex", 100)
+	if err != nil {
+		t.Fatalf("graphData globex: %v", err)
+	}
+	if len(g2.Nodes) != 0 || len(g2.Edges) != 0 {
+		t.Fatalf("cross-tenant leak: %d nodes, %d edges", len(g2.Nodes), len(g2.Edges))
+	}
+}

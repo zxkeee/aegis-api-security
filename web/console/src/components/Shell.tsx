@@ -7,6 +7,7 @@ import {
   LogOut,
   Moon,
   RefreshCw,
+  Share2,
   ShieldCheck,
   Sun,
   Users,
@@ -29,6 +30,7 @@ export const NAV: NavItem[] = [
   { key: "posture", label: "Posture", icon: <ShieldCheck size={18} /> },
   { key: "findings", label: "Findings", icon: <AlertTriangle size={18} /> },
   { key: "consumers", label: "Consumers", icon: <Users size={18} /> },
+  { key: "map", label: "Map", icon: <Share2 size={18} /> },
   { key: "forensics", label: "Forensics", icon: <Activity size={18} /> },
   { key: "access", label: "Access", icon: <Waypoints size={18} /> },
 ];

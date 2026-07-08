@@ -79,6 +79,35 @@ type EndpointConsumer struct {
 	LastSeen     time.Time `json:"last_seen"`
 }
 
+// Graph is the consumer→endpoint access map for the dashboard visualisation:
+// who (consumers) calls what (endpoints), so an operator sees the API topology
+// and where risk/PII concentrates.
+type Graph struct {
+	Nodes []GraphNode `json:"nodes"`
+	Edges []GraphEdge `json:"edges"`
+}
+
+// GraphNode is a consumer or an endpoint. ID is type-prefixed
+// ("consumer:<id>" / "endpoint:<id>") so the two ID spaces never collide.
+type GraphNode struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"` // "consumer" | "endpoint"
+	Label    string `json:"label"`
+	Requests int64  `json:"requests"`
+	Kind     string `json:"kind,omitempty"`    // consumer: jwt|key|ip
+	Method   string `json:"method,omitempty"`  // endpoint HTTP method
+	Posture  string `json:"posture,omitempty"` // endpoint posture
+	Risk     int    `json:"risk,omitempty"`    // endpoint risk score
+	PII      bool   `json:"pii,omitempty"`     // endpoint exposes PII
+}
+
+// GraphEdge is a consumer calling an endpoint, weighted by request count.
+type GraphEdge struct {
+	Source   string `json:"source"` // "consumer:<id>"
+	Target   string `json:"target"` // "endpoint:<id>"
+	Requests int64  `json:"requests"`
+}
+
 // PostureSummary is the coverage roll-up for the dashboard.
 type PostureSummary struct {
 	Total       int        `json:"total"`
@@ -436,6 +465,12 @@ func (c *Catalog) GetEndpoint(ctx context.Context, id string) (*Endpoint, []Endp
 // ListConsumers returns the top API consumers.
 func (c *Catalog) ListConsumers(ctx context.Context, limit int) ([]Consumer, error) {
 	return c.pg.listConsumers(ctx, tenant.From(ctx), limit)
+}
+
+// Graph returns the consumer→endpoint access map (top `limit` busiest edges and
+// the nodes they touch) for the dashboard visualisation.
+func (c *Catalog) Graph(ctx context.Context, limit int) (Graph, error) {
+	return c.pg.graphData(ctx, tenant.From(ctx), limit)
 }
 
 // PostureSummary returns the coverage roll-up for the request's tenant.

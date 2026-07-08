@@ -124,6 +124,27 @@ export interface BlockEntry {
   extra?: Record<string, unknown>;
 }
 
+export interface GraphNode {
+  id: string;
+  type: "consumer" | "endpoint";
+  label: string;
+  requests: number;
+  kind?: string;
+  method?: string;
+  posture?: string;
+  risk?: number;
+  pii?: boolean;
+}
+export interface GraphEdge {
+  source: string;
+  target: string;
+  requests: number;
+}
+export interface Graph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface Effectiveness {
   blocks_by_control: Record<string, number>;
   total_blocks: number;

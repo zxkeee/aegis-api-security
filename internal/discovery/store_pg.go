@@ -393,6 +393,100 @@ func (s *pgStore) getEndpoint(ctx context.Context, tenantID, id string) (*Endpoi
 	return &e, consumers, nil
 }
 
+// graphData builds the consumer→endpoint map: the top `limit` busiest edges and
+// the endpoint/consumer nodes they reference. Bounding by busiest edges keeps the
+// graph connected and readable rather than dumping the whole catalog.
+func (s *pgStore) graphData(ctx context.Context, tenantID string, limit int) (Graph, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 150
+	}
+	g := Graph{Nodes: []GraphNode{}, Edges: []GraphEdge{}}
+	err := s.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT endpoint_id, consumer_id, request_count
+			FROM api_endpoint_consumers WHERE tenant_id = $1
+			ORDER BY request_count DESC LIMIT $2`, tenantOr(tenantID), limit)
+		if err != nil {
+			return err
+		}
+		epSet, conSet := map[string]bool{}, map[string]bool{}
+		func() {
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var epID, conID string
+				var reqs int64
+				if err = rows.Scan(&epID, &conID, &reqs); err != nil {
+					return
+				}
+				epSet[epID] = true
+				conSet[conID] = true
+				g.Edges = append(g.Edges, GraphEdge{
+					Source: "consumer:" + conID, Target: "endpoint:" + epID, Requests: reqs,
+				})
+			}
+			err = rows.Err()
+		}()
+		if err != nil {
+			return err
+		}
+
+		// Endpoint nodes referenced by those edges.
+		epRows, err := tx.QueryContext(ctx, `SELECT id, method, path_template, posture,
+			risk_score, pii_count, request_count FROM api_endpoints
+			WHERE tenant_id = $1 AND id = ANY($2)`, tenantOr(tenantID), pq.Array(mapKeys(epSet)))
+		if err != nil {
+			return err
+		}
+		func() {
+			defer func() { _ = epRows.Close() }()
+			for epRows.Next() {
+				var id, method, tmpl, posture string
+				var risk int
+				var piiCount, reqs int64
+				if err = epRows.Scan(&id, &method, &tmpl, &posture, &risk, &piiCount, &reqs); err != nil {
+					return
+				}
+				g.Nodes = append(g.Nodes, GraphNode{
+					ID: "endpoint:" + id, Type: "endpoint", Label: method + " " + tmpl,
+					Method: method, Posture: posture, Risk: risk, PII: piiCount > 0, Requests: reqs,
+				})
+			}
+			err = epRows.Err()
+		}()
+		if err != nil {
+			return err
+		}
+
+		// Consumer nodes referenced by those edges.
+		conRows, err := tx.QueryContext(ctx, `SELECT id, kind, label, request_count
+			FROM api_consumers WHERE tenant_id = $1 AND id = ANY($2)`, tenantOr(tenantID), pq.Array(mapKeys(conSet)))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = conRows.Close() }()
+		for conRows.Next() {
+			var id, kind, label string
+			var reqs int64
+			if err = conRows.Scan(&id, &kind, &label, &reqs); err != nil {
+				return err
+			}
+			g.Nodes = append(g.Nodes, GraphNode{
+				ID: "consumer:" + id, Type: "consumer", Label: label, Kind: kind, Requests: reqs,
+			})
+		}
+		return conRows.Err()
+	})
+	return g, err
+}
+
+// mapKeys returns the keys of a set as a slice (order irrelevant).
+func mapKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func (s *pgStore) listConsumers(ctx context.Context, tenantID string, limit int) ([]Consumer, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
