@@ -175,6 +175,15 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 			"id:10012,phase:1,deny,status:400,log,msg:'Request Smuggling',tag:'protocol',severity:CRITICAL"
 	`
 
+	// Observe/pilot mode: run every rule but interrupt nothing. The built-in
+	// starter rules carry inline `deny` actions under `SecRuleEngine On`, so
+	// block_mode alone does not stop them — switch the engine to DetectionOnly
+	// here (the CRS path already keys its engine off block_mode, which observe
+	// forces false).
+	if cfg.Observe {
+		directives = strings.Replace(directives, "SecRuleEngine On", "SecRuleEngine DetectionOnly", 1)
+	}
+
 	waf, err := buildCorazaWAF(cfg, directives)
 	if err != nil {
 		log.Error("waf: failed to initialize", map[string]any{"error": err.Error()})

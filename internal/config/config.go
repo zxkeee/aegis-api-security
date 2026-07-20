@@ -79,7 +79,15 @@ type GatewayConfig struct {
 	// RequireTLS makes startup fail unless TLS is terminated at the gateway
 	// (tls.enabled). Set it in production. Leave false only when TLS is terminated
 	// by a trusted upstream (ingress / load balancer) in front of AEGIS.
-	RequireTLS     bool               `yaml:"require_tls"`
+	RequireTLS bool `yaml:"require_tls"`
+	// Observe puts the gateway into pilot / passive mode: every control still
+	// inspects and records (WAF detection, DLP classification, BOLA/BFLA, passive
+	// discovery, schema drift), but NOTHING is blocked, NO response body is
+	// modified, and NO control fails closed. It is the guaranteed-safe posture for
+	// a first pilot on a partner's live traffic: the findings report is produced
+	// with zero risk to their production. ApplyObserveMode coerces the whole
+	// security config into this shape after load and on every hot-reload.
+	Observe        bool               `yaml:"observe"`
 	ForensicDSN    string             `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
 	TrustedProxies []string           `yaml:"trusted_proxies"`
 	TLS            TLSConfig          `yaml:"tls"`
@@ -98,6 +106,91 @@ type GatewayConfig struct {
 	// Retention bounds the growth of the PostgreSQL tables that would otherwise
 	// grow without limit (forensic logs, admin audit log, consumer graph).
 	Retention RetentionConfig `yaml:"retention"`
+}
+
+// ApplyObserveMode coerces the security configuration into a guaranteed
+// non-disruptive posture when Observe is set. It runs after Validate on both
+// startup and hot-reload (see loadValidatedConfig), so the coercion cannot be
+// bypassed by a per-route override or a later config edit.
+//
+// The rule is simple and total: keep the controls that produce findings and
+// force them to record-only; disable the controls that only enforce (they add
+// no discovery value and can only block); never modify a response body; never
+// fail closed. After this runs, no request can be blocked, throttled,
+// challenged, redacted, or 401'd by AEGIS.
+//
+// Returns the list of coercions applied, for a startup log the operator can see.
+func (c *GatewayConfig) ApplyObserveMode() []string {
+	if !c.Observe {
+		return nil
+	}
+	s := &c.Security
+	var changed []string
+	note := func(cond bool, msg string) {
+		if cond {
+			changed = append(changed, msg)
+		}
+	}
+
+	// Detection controls: keep enabled, force to record-only.
+	note(s.WAF.BlockMode, "waf.block_mode -> false")
+	note(s.Schema.BlockMode, "schema.block_mode -> false")
+	note(s.Abuse.BlockMode, "abuse.block_mode -> false")
+	note(s.Abuse.ObjectOwnershipBlock, "abuse.object_ownership_block -> false")
+	s.WAF.BlockMode = false
+	s.WAF.Observe = true // forces Coraza to DetectionOnly (built-in rules ignore block_mode)
+	s.Schema.BlockMode = false
+	s.Abuse.BlockMode = false
+	s.Abuse.ObjectOwnershipBlock = false
+	// DLP classifies + flags the observation but never rewrites the body.
+	note(s.DLP.Enabled, "dlp -> observe (classify, no redaction)")
+	s.DLP.Observe = true
+	// Auth extracts identity from a valid token but never rejects.
+	note(s.Auth.Enabled || anyRouteRequiresAuthCfg(c.Routes), "auth -> soft (identity only, no 401)")
+	s.Auth.Observe = true
+
+	// Enforcement-only controls: no discovery value, only risk blocking. Off.
+	note(s.RateLimit.Enabled, "rate_limit -> off")
+	note(s.IPGuard.Enabled, "ip_guard -> off")
+	note(s.ThreatFeed.Enabled, "threat_feed -> off")
+	note(s.Bot.Enabled, "bot -> off")
+	note(s.Challenge.Enabled, "challenge -> off")
+	note(s.Behavior.Enabled, "behavior -> off (feeds auto-ban)")
+	s.RateLimit.Enabled = false
+	s.IPGuard.Enabled = false
+	s.ThreatFeed.Enabled = false
+	s.Bot.Enabled = false
+	s.Challenge.Enabled = false
+	s.Behavior.Enabled = false
+
+	// Per-route overrides: the only route-level control that blocks without a
+	// block_mode flag is rate_limit — clear it so a route cannot re-enable
+	// throttling. WAF/DLP/require_auth route overrides only turn the (now
+	// non-blocking) control on, which is fine.
+	for i := range c.Routes {
+		if c.Routes[i].RateLimit != nil {
+			c.Routes[i].RateLimit = nil
+			note(true, "route "+c.Routes[i].Path+": rate_limit override -> off")
+		}
+	}
+
+	// Never fail closed in a pilot.
+	s.RateLimit.FailClosed = false
+	s.IPGuard.FailClosed = false
+	s.Auth.RevocationFailClosed = false
+
+	return changed
+}
+
+// anyRouteRequiresAuthCfg reports whether any route explicitly enables auth, so
+// the observe log mentions soft-auth even when security.auth is globally off.
+func anyRouteRequiresAuthCfg(routes []RouteConfig) bool {
+	for _, r := range routes {
+		if r.RequireAuth != nil && *r.RequireAuth {
+			return true
+		}
+	}
+	return false
 }
 
 // RetentionConfig configures the background retention sweep that deletes aged
@@ -281,6 +374,12 @@ type AuthConfig struct {
 	// "uid" and abuse.owner_fields: ["user_id"] so the two compare. When unset,
 	// ownership compares against sub.
 	IdentityClaim string `yaml:"identity_claim"`
+	// Observe is set by ApplyObserveMode (not an operator field): when set, JWT
+	// auth still extracts, propagates and signs identity from a VALID token (so
+	// discovery and BOLA attribution work), but a missing, malformed, expired or
+	// revoked token is passed THROUGH instead of rejected with 401 — the pilot
+	// must never block traffic the customer's own backend would have accepted.
+	Observe bool `yaml:"-"`
 }
 
 type WAFConfig struct {
@@ -301,6 +400,12 @@ type WAFConfig struct {
 	// AnomalyThreshold is the inbound anomaly score at which CRS blocks (default
 	// 5). Raise to be more permissive, lower to be stricter. Only used with CRS.
 	AnomalyThreshold int `yaml:"anomaly_threshold"`
+	// Observe is set by ApplyObserveMode (not an operator field): it forces the
+	// Coraza engine to DetectionOnly for BOTH the built-in starter rules and CRS,
+	// so attacks are still matched and logged but the request is never
+	// interrupted. block_mode alone does not achieve this for the built-in rules,
+	// which carry inline `deny` actions and run under `SecRuleEngine On`.
+	Observe bool `yaml:"-"`
 }
 
 type BotConfig struct {
@@ -340,6 +445,12 @@ type IPGuardConfig struct {
 type DLPConfig struct {
 	Enabled  bool     `yaml:"enabled"`
 	Patterns []string `yaml:"patterns"`
+	// Observe is set by ApplyObserveMode (not an operator field): DLP still
+	// classifies the response and flags the discovery observation with the PII
+	// types it found, but passes the body through UNMODIFIED — no redaction. Lets
+	// a pilot report "this endpoint leaks cards" without altering the customer's
+	// traffic.
+	Observe bool `yaml:"-"`
 }
 
 type CORSConfig struct {

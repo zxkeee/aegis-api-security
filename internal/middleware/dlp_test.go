@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"api-gateway/internal/config"
+	"api-gateway/internal/discovery"
 )
 
 func TestDLP_RedactsDefaultPatterns(t *testing.T) {
@@ -234,5 +236,36 @@ func TestDLP_CompressedResponsePassthrough(t *testing.T) {
 
 	if rec.Body.String() != raw {
 		t.Fatalf("compressed body must pass through unmodified, got %q", rec.Body.String())
+	}
+}
+
+// TestDLP_ObserveDoesNotRedact is the pilot-mode guarantee: DLP still detects
+// PII and flags the discovery observation (so findings are produced), but the
+// response body is passed through UNMODIFIED — no redaction of the customer's
+// traffic.
+func TestDLP_ObserveDoesNotRedact(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	cfg := config.DLPConfig{Enabled: true, Observe: true}
+	const card = "4111 1111 1111 1111"
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"card":"`+card+`"}`)
+	})
+	obs := &discovery.Observation{}
+	h := DLP(cfg, fakeLogger{}, &fakeStore{})(next)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), obsKey, obs))
+	h.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, card) {
+		t.Fatalf("observe mode must NOT redact — card must stay in the body: %q", body)
+	}
+	if strings.Contains(body, "REDACTED") {
+		t.Fatalf("observe mode must not write redaction markers: %q", body)
+	}
+	if !obs.PII || len(obs.PIITypes) == 0 {
+		t.Fatalf("observe mode must still FLAG the observation as PII (pii=%v types=%v)", obs.PII, obs.PIITypes)
 	}
 }
