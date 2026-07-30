@@ -244,8 +244,16 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       thresholds). First on-hardware run in `tests/load/results-2026-06-21.md`:
       single-tenant 373.6 RPS / p50 33.5 ms, multi-tenant 375.7 RPS / p50
       34 ms (MT overhead in the noise), attack-mix p50 7.9 ms (WAF rejects
-      early). Still to do: wired-LAN run, VU sweep, WAF on/off split for
-      published capacity numbers.
+      early). **VU sweep (10/50/100/200) + WAF on/off split** run on the NUC
+      (`tests/load/capacity-sweep-2026-07-31.md`): WAF overhead is small and
+      flat at moderate load (~5–7% throughput, few ms latency). Honest finding,
+      not hidden: the sweep hit the shared demo backend's ceiling (~400–450
+      req/s, flat across VU counts) before AEGIS's own — at 200 VUs with WAF
+      off the backend saturates and the circuit breaker opens (no second
+      upstream configured), which is the correct behaviour but means AEGIS's
+      *own* max-RPS still isn't isolated. Still to do: swap in a
+      purpose-built high-throughput backend to find AEGIS's actual ceiling;
+      wired-LAN run to remove Wi-Fi noise from the absolute numbers.
 - [~] **Graceful failure under load.** Redis-outage behaviour verified two ways:
       (1) end-to-end unit matrix in `internal/middleware/degradation_test.go`
       (fail_closed → 503, default → 200, static blacklist still enforced, no
