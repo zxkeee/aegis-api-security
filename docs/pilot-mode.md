@@ -57,10 +57,23 @@ accepted; the backend remains the source of truth for enforcement during a pilot
    with `AEGIS_ADMIN_SECRET`, `AEGIS_REDIS_PASSWORD` set — the bundled Redis and
    PostgreSQL cover the catalog/findings/consumer graph out of the box.
 3. Let it run for a week.
-4. Read the findings: `GET /api/findings` (critical-first; add `?format=csv` for
-   a downloadable report you can hand to the partner without console access),
-   the catalog (`GET /api/catalog`, also `?format=csv`), posture
-   (`GET /api/posture/summary`), and compliance mapping (`GET /api/compliance`).
+4. Read the findings from **two views** — they cover different things:
+   - `GET /api/findings` — catalog-derived findings (PII exposed without auth,
+     shadow endpoints), critical-first; add `?format=csv` for a downloadable
+     report you can hand to the partner without console access.
+   - `GET /api/compliance` and `GET /api/block-log` — **runtime BOLA/BFLA
+     events** (confirmed single-object IDOR, enumeration, privileged-path
+     access), mapped to NIS2/ISO 27001/OWASP in `/api/compliance`. This is the
+     flagship detection and does **not** appear in `/api/findings`.
+
+   Also: `GET /api/catalog` (also `?format=csv`) and `GET /api/posture/summary`.
+
+   Confirmed single-object IDOR detection requires `security.abuse.owner_fields`
+   to name the response-body field that carries the object's owner id (e.g.
+   `user_id`) — `config/gateway.pilot.yaml` ships with this empty by design
+   (it's app-specific); leaving it unset means only the coarser enumeration
+   signal runs, not the confirmed-from-body detection that's this product's
+   main differentiator.
 
 > Note: observe mode is still **inline** — AEGIS sits in the request path, so it
 > adds the (sub-millisecond, fail-fast) proxy hop even though it blocks nothing.

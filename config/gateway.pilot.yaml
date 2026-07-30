@@ -57,6 +57,12 @@ security:
   abuse:
     enabled: true
     object_ownership: true
+    # TODO: name the response-body field(s) that carry an object's owner id
+    # (e.g. "user_id", "owner_id", "account_id"). Without this, ownership is
+    # only inferred from access patterns (enumeration) — the flagship
+    # single-object IDOR/BOLA detection (confirmed from the response body,
+    # the leak a signature WAF can't see) never fires. See demo/idor-demo.sh.
+    owner_fields: []
   schema:
     enabled: false
   api_inventory:
