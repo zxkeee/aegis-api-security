@@ -94,6 +94,10 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       (JSON request bodies were not inspected — see `waf.go` JSON body processor).
       Note: nuclei against the data plane false-positives on the reflecting test
       backend, so the gate scans the admin plane and pentest.sh covers the WAF.
+      Second automated pass added: **OWASP ZAP baseline scan** against the same
+      admin plane (`tests/dynamic/zap-baseline-2026-07-31.md`) — 0 high/critical,
+      4 warnings, all pre-existing and already-documented tradeoffs (CSP
+      style-src, COEP). Not wired into CI (one-off run, see the report for why).
       Still open (external, cannot be self-certified): an **independent manual
       pentest** by a third party.
 - [x] **TLS mandatory in production.** `require_tls` makes startup fail without
