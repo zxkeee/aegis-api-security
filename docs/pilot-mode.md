@@ -49,13 +49,18 @@ accepted; the backend remains the source of truth for enforcement during a pilot
 
 ## Deploying a pilot
 
-1. Put AEGIS inline in front of the partner's API with `observe: true`.
-2. Point `forensic_dsn` at PostgreSQL so the catalog, findings and consumer graph
-   persist.
+1. Copy `config/gateway.pilot.yaml` and fill in its two `TODO`s: the partner's
+   real backend(s) under `routes`, and `trusted_proxies` if there's an LB/CDN in
+   front of AEGIS. It already ships with `observe: true` and every detection
+   control enabled — nothing to hand-tune before going live.
+2. Run it via `docker-compose.yml` (`command: ["--config", "config/gateway.pilot.yaml"]`)
+   with `AEGIS_ADMIN_SECRET`, `AEGIS_REDIS_PASSWORD` set — the bundled Redis and
+   PostgreSQL cover the catalog/findings/consumer graph out of the box.
 3. Let it run for a week.
-4. Read the findings: `GET /api/findings` (critical-first), the catalog
-   (`GET /api/catalog`), posture (`GET /api/posture/summary`), and compliance
-   mapping (`GET /api/compliance`).
+4. Read the findings: `GET /api/findings` (critical-first; add `?format=csv` for
+   a downloadable report you can hand to the partner without console access),
+   the catalog (`GET /api/catalog`, also `?format=csv`), posture
+   (`GET /api/posture/summary`), and compliance mapping (`GET /api/compliance`).
 
 > Note: observe mode is still **inline** — AEGIS sits in the request path, so it
 > adds the (sub-millisecond, fail-fast) proxy hop even though it blocks nothing.
