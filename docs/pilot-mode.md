@@ -76,6 +76,8 @@ accepted; the backend remains the source of truth for enforcement during a pilot
    main differentiator.
 
 > Note: observe mode is still **inline** — AEGIS sits in the request path, so it
-> adds the (sub-millisecond, fail-fast) proxy hop even though it blocks nothing.
-> True out-of-band ingestion (traffic mirroring / eBPF, ROADMAP B1) removes the
-> path entirely and is the next step for partners who cannot add any inline hop.
+> adds a proxy hop even though it blocks nothing. Measured overhead is not
+> distinguishable from enforce mode's own cost at 20 VUs — see
+> `tests/load/observe-mode-results-2026-07-31.md`. True out-of-band ingestion
+> (traffic mirroring / eBPF, ROADMAP B1) removes the path entirely and is the
+> next step for partners who cannot add any inline hop.
