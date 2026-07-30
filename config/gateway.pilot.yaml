@@ -1,0 +1,93 @@
+# AEGIS — PILOT config template.
+#
+# Copy this file, fill in the two TODOs below, and run it (see docs/pilot-mode.md
+# for the full walkthrough). `observe: true` is the load-bearing line: it forces
+# every security control into a guaranteed non-disruptive, record-only posture
+# (ApplyObserveMode, internal/config/config.go) on startup and on every
+# hot-reload — nothing here can be misconfigured into blocking the partner's
+# traffic. Secrets still come from the environment, never this file:
+# AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, AEGIS_FORENSIC_DSN.
+
+observe: true
+
+listen: ":8080"
+admin_listen: ":8081"
+admin_auth: true
+admin_secret: ""       # via AEGIS_ADMIN_SECRET
+admin_session_ttl: 8h
+require_tls: false     # terminate TLS upstream (LB/CDN) unless AEGIS itself faces the internet
+trusted_proxies: []    # TODO: your LB/CDN's IPs, or RealIP/JA3 will trust a spoofable header
+
+tls:
+  enabled: false
+
+redis:
+  addr: "redis:6379"   # compose service name; point at a real Redis for a non-compose deploy
+  password: ""          # via AEGIS_REDIS_PASSWORD
+
+# forensic_dsn (catalog / posture / findings / consumers / audit) is supplied by
+# AEGIS_FORENSIC_DSN — required for a pilot, since GET /api/findings, /api/catalog
+# and /api/compliance all read from PostgreSQL. Without it the run produces no
+# report at all.
+
+logging:
+  level: "info"
+  format: "json"
+
+multitenancy:
+  enabled: false
+
+security:
+  # Every control below stays "enabled" so it inspects and records — observe
+  # mode (above) is what strips out the blocking/redacting/fail-closed behavior.
+  # Do not hand-tune block_mode/fail_closed here; ApplyObserveMode overrides them.
+  waf:
+    enabled: true
+  dlp:
+    enabled: true
+  auth:
+    # TODO: if the partner's API uses JWTs, set enabled: true and either
+    # AEGIS_JWT_SECRET (HMAC) or jwks_url (RSA/ECDSA) below — this is what lets
+    # findings/BOLA detection attribute PII exposure and object access to a
+    # real identity instead of just an IP. A pilot with auth left disabled here
+    # still runs and still produces the discovery/DLP/WAF findings.
+    enabled: false
+    secret: ""          # via AEGIS_JWT_SECRET
+    jwks_url: ""
+  abuse:
+    enabled: true
+    object_ownership: true
+    # TODO: name the response-body field(s) that carry an object's owner id
+    # (e.g. "user_id", "owner_id", "account_id"). Without this, ownership is
+    # only inferred from access patterns (enumeration) — the flagship
+    # single-object IDOR/BOLA detection (confirmed from the response body,
+    # the leak a signature WAF can't see) never fires. See demo/idor-demo.sh.
+    owner_fields: []
+  schema:
+    enabled: false
+  api_inventory:
+    enabled: true
+  rate_limit:
+    enabled: false       # no discovery value in observe mode; forced off anyway
+  ip_guard:
+    enabled: false
+  bot:
+    enabled: false
+  challenge:
+    enabled: false
+  behavior:
+    enabled: false
+  threat_feed:
+    enabled: false
+  cors:
+    enabled: false
+
+routes:
+  # TODO: replace with the partner's real backend(s). Path "/" + all methods is
+  # the simplest pilot shape — mirror the partner's actual route map if they
+  # have one, so the catalog reflects real API boundaries from day one.
+  - path: "/"
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    upstreams:
+      - "https://REPLACE-ME.partner-backend.example"
+    timeout: "15s"

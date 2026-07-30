@@ -137,8 +137,18 @@ func (ja *JWTAuth) Middleware() Middleware {
 				}
 			}
 
+			// Observe (pilot) mode: extract and propagate identity from a VALID
+			// token, but never reject. Any auth failure below is passed THROUGH to
+			// the backend (which enforces its own auth) instead of returning 401,
+			// so AEGIS blocks no traffic the customer would have accepted.
+			obs := ja.cfg.Observe
+
 			auth := r.Header.Get("Authorization")
 			if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+				if obs {
+					next.ServeHTTP(w, r)
+					return
+				}
 				http.Error(w, "Missing or invalid Authorization header", http.StatusUnauthorized)
 				return
 			}
@@ -159,6 +169,10 @@ func (ja *JWTAuth) Middleware() Middleware {
 					"ip":    RealIP(r),
 					"error": errMsg,
 				})
+				if obs {
+					next.ServeHTTP(w, r)
+					return
+				}
 				http.Error(w, "Invalid Token", http.StatusUnauthorized)
 				return
 			}
@@ -166,6 +180,10 @@ func (ja *JWTAuth) Middleware() Middleware {
 			// Extract claims
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
+				if obs {
+					next.ServeHTTP(w, r)
+					return
+				}
 				http.Error(w, "Invalid Claims", http.StatusUnauthorized)
 				return
 			}
@@ -174,6 +192,10 @@ func (ja *JWTAuth) Middleware() Middleware {
 			if ja.cfg.Issuer != "" {
 				iss, _ := claims.GetIssuer()
 				if iss != ja.cfg.Issuer {
+					if obs {
+						next.ServeHTTP(w, r)
+						return
+					}
 					http.Error(w, "Invalid Issuer", http.StatusUnauthorized)
 					return
 				}
@@ -183,6 +205,10 @@ func (ja *JWTAuth) Middleware() Middleware {
 			if ja.cfg.Audience != "" {
 				aud, _ := claims.GetAudience()
 				if !slices.Contains(aud, ja.cfg.Audience) {
+					if obs {
+						next.ServeHTTP(w, r)
+						return
+					}
 					http.Error(w, "Invalid Audience", http.StatusUnauthorized)
 					return
 				}
@@ -200,7 +226,7 @@ func (ja *JWTAuth) Middleware() Middleware {
 					// default we fail open (proceed) to preserve availability; in
 					// high-assurance mode we deny so a revoked token can never slip
 					// through during an outage.
-					if ja.cfg.RevocationFailClosed {
+					if ja.cfg.RevocationFailClosed && !obs {
 						http.Error(w, "Token Revocation Check Unavailable", http.StatusServiceUnavailable)
 						return
 					}
@@ -210,6 +236,10 @@ func (ja *JWTAuth) Middleware() Middleware {
 						"jti": jti,
 						"ip":  RealIP(r),
 					})
+					if obs {
+						next.ServeHTTP(w, r)
+						return
+					}
 					http.Error(w, "Token Revoked", http.StatusUnauthorized)
 					return
 				}

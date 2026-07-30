@@ -471,3 +471,69 @@ func TestValidate_OIDCRequiresAccessRestriction(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyObserveMode verifies the pilot/passive coercion: every blocking or
+// modifying behaviour is turned off while the detection controls stay enabled.
+func TestApplyObserveMode(t *testing.T) {
+	cfg := GatewayConfig{
+		Observe: true,
+		Routes:  []RouteConfig{{Path: "/x", RateLimit: &RateLimitConfig{Enabled: true}}},
+		Security: SecurityConfig{
+			WAF:        WAFConfig{Enabled: true, BlockMode: true},
+			Schema:     SchemaConfig{Enabled: true, BlockMode: true},
+			Abuse:      AbuseConfig{Enabled: true, BlockMode: true, ObjectOwnershipBlock: true},
+			DLP:        DLPConfig{Enabled: true},
+			Auth:       AuthConfig{Enabled: true, RevocationFailClosed: true},
+			RateLimit:  RateLimitConfig{Enabled: true, FailClosed: true},
+			IPGuard:    IPGuardConfig{Enabled: true, FailClosed: true},
+			ThreatFeed: ThreatFeedConfig{Enabled: true},
+			Bot:        BotConfig{Enabled: true},
+			Challenge:  ChallengeConfig{Enabled: true},
+			Behavior:   BehaviorConfig{Enabled: true},
+		},
+	}
+	changed := cfg.ApplyObserveMode()
+	if len(changed) == 0 {
+		t.Fatal("ApplyObserveMode reported no changes on an enforcing config")
+	}
+	s := cfg.Security
+
+	// Detection controls: still enabled, but never blocking / modifying.
+	if s.WAF.BlockMode || s.Schema.BlockMode || s.Abuse.BlockMode || s.Abuse.ObjectOwnershipBlock {
+		t.Error("a block_mode remained set")
+	}
+	if !s.WAF.Enabled || !s.Schema.Enabled || !s.Abuse.Enabled || !s.DLP.Enabled || !s.Auth.Enabled {
+		t.Error("a detection control was disabled (should stay on)")
+	}
+	if !s.DLP.Observe {
+		t.Error("dlp.Observe not set")
+	}
+	if !s.Auth.Observe {
+		t.Error("auth.Observe not set")
+	}
+	if !s.WAF.Observe {
+		t.Error("waf.Observe not set (built-in rules would still block via inline deny)")
+	}
+
+	// Enforcement-only controls: disabled.
+	if s.RateLimit.Enabled || s.IPGuard.Enabled || s.ThreatFeed.Enabled || s.Bot.Enabled || s.Challenge.Enabled || s.Behavior.Enabled {
+		t.Error("an enforcement-only control remained enabled")
+	}
+	// Per-route rate-limit override cleared.
+	if cfg.Routes[0].RateLimit != nil {
+		t.Error("per-route rate_limit override was not cleared")
+	}
+	// Never fail closed.
+	if s.RateLimit.FailClosed || s.IPGuard.FailClosed || s.Auth.RevocationFailClosed {
+		t.Error("a fail_closed flag remained set")
+	}
+
+	// Observe off = no-op.
+	plain := GatewayConfig{Security: SecurityConfig{WAF: WAFConfig{Enabled: true, BlockMode: true}}}
+	if got := plain.ApplyObserveMode(); got != nil {
+		t.Fatalf("ApplyObserveMode with Observe=false should be a no-op, got %v", got)
+	}
+	if !plain.Security.WAF.BlockMode {
+		t.Error("Observe=false must not change anything")
+	}
+}

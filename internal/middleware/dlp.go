@@ -62,31 +62,50 @@ func DLP(cfg config.DLPConfig, log Logger, st MetricsSink) Middleware {
 				return
 			}
 
-			body := dw.buf.Bytes()
+			orig := dw.buf.Bytes()
 			mask := []byte("***REDACTED***")
 
-			// Typed pass: redacts and tells us WHICH data classes were present.
-			body, types := classify.Redact(body, mask)
-			redacted := len(types) > 0
+			// Typed pass: classify WHICH data classes are present. Redact returns a
+			// new slice, so `orig` is untouched — in observe mode we keep it for the
+			// wire and use the classification for reporting only.
+			redactedBody, types := classify.Redact(orig, mask)
+			found := len(types) > 0
 
-			// Custom operator regexes (untyped) on top.
+			body := redactedBody
+			if cfg.Observe {
+				body = orig
+			}
+
+			// Custom operator regexes (untyped). Always DETECT; only rewrite when
+			// enforcing (observe mode must not modify the response body).
 			for _, re := range customPatterns {
+				if cfg.Observe {
+					if re.Match(body) {
+						found = true
+					}
+					continue
+				}
 				newBody := re.ReplaceAll(body, mask)
 				if len(newBody) != len(body) {
-					redacted = true
+					found = true
 				}
 				body = newBody
 			}
 
-			if redacted {
-				st.IncrMetric(r.Context(), "dlp_redacted")
+			if found {
+				metric, msg := "dlp_redacted", "dlp: sensitive data redacted from response"
+				if cfg.Observe {
+					metric, msg = "dlp_observed", "dlp: sensitive data detected (observe mode — not redacted)"
+				}
+				st.IncrMetric(r.Context(), metric)
 				// Flag the discovery observation so the catalog can mark this
-				// endpoint as exposing sensitive data (drives risk + findings).
+				// endpoint as exposing sensitive data (drives risk + findings) —
+				// this is the pilot's value and runs in both modes.
 				if obs := observationFrom(r.Context()); obs != nil {
 					obs.PII = true
 					obs.PIITypes = types
 				}
-				log.Info("dlp: sensitive data redacted from response", map[string]any{
+				log.Info(msg, map[string]any{
 					"path":  r.URL.Path,
 					"ip":    RealIP(r),
 					"types": types,

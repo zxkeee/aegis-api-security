@@ -228,6 +228,12 @@ func (h *handlers) getFindings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, counts := flattenFindings(eps)
+
+	if strings.EqualFold(r.URL.Query().Get("format"), "csv") {
+		writeFindingsCSV(w, rows)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"findings": rows,
 		"count":    len(rows),
@@ -312,6 +318,23 @@ func writeCatalogCSV(w http.ResponseWriter, eps []discovery.Endpoint) {
 			strconv.FormatInt(e.AuthPresentCount, 10), strconv.FormatInt(e.AnonCount, 10),
 			strconv.FormatInt(e.PIICount, 10), strconv.FormatInt(e.AvgLatencyMs, 10),
 			e.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
+		})
+	}
+}
+
+// writeFindingsCSV renders the findings view as a downloadable report — the
+// artifact handed to a pilot partner after the observe-mode run, so it needs
+// no admin-console access to read.
+func writeFindingsCSV(w http.ResponseWriter, rows []findingRow) {
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="aegis-findings-report.csv"`)
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	_ = cw.Write([]string{"severity", "owasp", "method", "path_template", "risk_score", "title", "why"})
+	for _, row := range rows {
+		_ = cw.Write([]string{
+			csvSafe(row.Finding.Severity), csvSafe(row.Finding.OWASP), csvSafe(row.Method), csvSafe(row.PathTemplate),
+			strconv.Itoa(row.RiskScore), csvSafe(row.Finding.Title), csvSafe(row.Finding.Why),
 		})
 	}
 }

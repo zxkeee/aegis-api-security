@@ -55,6 +55,11 @@ func main() {
 		"commit":       commit,
 		"build_time":   buildTime,
 	})
+	if cfg.Observe {
+		log.Warn("OBSERVE MODE ACTIVE: passive pilot posture — the gateway inspects and records but blocks nothing, "+
+			"modifies no response body, and never fails closed. Discovery, findings, WAF-detection, DLP-classification "+
+			"and BOLA/BFLA still run. Do NOT rely on AEGIS for enforcement in this mode.", nil)
+	}
 
 	// ── Redis Store ───────────────────────────────────────────────────────────
 	st, err := store.NewWithConfig(store.SentinelOptions{
@@ -378,6 +383,10 @@ func loadValidatedConfig(path string) (config.GatewayConfig, error) {
 	if err := config.Validate(cfg); err != nil {
 		return config.GatewayConfig{}, err
 	}
+	// Observe/pilot mode coercion runs AFTER validation, so the returned config is
+	// already in its guaranteed non-disruptive shape before any chain is built —
+	// on startup and on every hot-reload alike.
+	cfg.ApplyObserveMode()
 	if err := middleware.InitTrustedProxies(cfg.TrustedProxies); err != nil {
 		return config.GatewayConfig{}, err
 	}
@@ -428,6 +437,9 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		if err != nil {
 			log.Error("hot-reload: rejected, previous config stays active", map[string]any{"error": err.Error()})
 			return
+		}
+		if newCfg.Observe {
+			log.Warn("hot-reload: OBSERVE MODE ACTIVE — controls coerced to passive (record-only, no blocking/redaction)", nil)
 		}
 
 		// Rebuild the posture engine from the new config; it is the authority for

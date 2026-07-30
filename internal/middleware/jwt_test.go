@@ -195,3 +195,46 @@ func TestJWT_RevocationFailClosed_Denies(t *testing.T) {
 		t.Fatalf("fail-closed: got %d, want 503", rec.Code)
 	}
 }
+
+// TestJWT_ObserveSoftAuth verifies pilot/observe mode: identity is still
+// extracted and propagated from a VALID token, but a missing or invalid token
+// passes THROUGH (no 401) instead of blocking traffic the backend would accept.
+func TestJWT_ObserveSoftAuth(t *testing.T) {
+	cfg := config.AuthConfig{Enabled: true, Secret: testSecret, Observe: true}
+	st := &fakeStore{}
+
+	// (a) valid token: passes, identity propagated.
+	good := hsToken(t, testSecret, jwt.MapClaims{"sub": "alice", "exp": time.Now().Add(time.Hour).Unix()})
+	rec := serveJWT(cfg, st, "Bearer "+good)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Test-Subject") != "alice" {
+		t.Fatalf("observe valid token: code=%d subject=%q, want 200/alice", rec.Code, rec.Header().Get("X-Test-Subject"))
+	}
+
+	// (b) missing token: soft pass-through, NOT 401, no identity.
+	rec = serveJWT(cfg, st, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("observe missing token: got %d, want 200 (soft pass-through)", rec.Code)
+	}
+	if rec.Header().Get("X-Test-Subject") != "" {
+		t.Fatal("observe missing token: no identity should be propagated")
+	}
+
+	// (c) invalid signature: soft pass-through, NOT 401.
+	bad := hsToken(t, "a-totally-different-secret-32chars!!", jwt.MapClaims{"sub": "mallory", "exp": time.Now().Add(time.Hour).Unix()})
+	rec = serveJWT(cfg, st, "Bearer "+bad)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("observe invalid token: got %d, want 200 (soft pass-through)", rec.Code)
+	}
+	if rec.Header().Get("X-Test-Subject") != "" {
+		t.Fatal("observe invalid token: no identity should be propagated")
+	}
+
+	// Contrast: enforce mode still rejects missing / invalid tokens with 401.
+	enforce := config.AuthConfig{Enabled: true, Secret: testSecret}
+	if got := serveJWT(enforce, st, "").Code; got != http.StatusUnauthorized {
+		t.Fatalf("enforce missing token: got %d, want 401", got)
+	}
+	if got := serveJWT(enforce, st, "Bearer "+bad).Code; got != http.StatusUnauthorized {
+		t.Fatalf("enforce invalid token: got %d, want 401", got)
+	}
+}

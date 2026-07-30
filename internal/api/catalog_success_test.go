@@ -99,6 +99,19 @@ func TestCatalogHandlers_SuccessPaths(t *testing.T) {
 	if rec, fb := callGet(h.getFindings, "/api/findings", nil); rec.Code != http.StatusOK || fb["count"].(float64) < 1 {
 		t.Fatalf("findings = %d %v (want >=1 for the anon PII endpoint)", rec.Code, fb)
 	}
+
+	// CSV findings path — the pilot handoff report.
+	recFindingsCSV, _ := callGet(h.getFindings, "/api/findings?format=csv", nil)
+	if recFindingsCSV.Code != http.StatusOK || !strings.HasPrefix(recFindingsCSV.Header().Get("Content-Type"), "text/csv") {
+		t.Fatalf("findings csv = %d %q", recFindingsCSV.Code, recFindingsCSV.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(recFindingsCSV.Body.String(), "severity,owasp,method,path_template,risk_score,title,why") {
+		t.Fatal("findings csv header missing")
+	}
+	if len(strings.Split(strings.TrimSpace(recFindingsCSV.Body.String()), "\n")) < 2 {
+		t.Fatal("findings csv should have at least one data row")
+	}
+
 	if rec, rb := callGet(h.getReport, "/api/report", nil); rec.Code != http.StatusOK || rb["endpoints"] == nil {
 		t.Fatalf("report json = %d %v", rec.Code, rb)
 	}
