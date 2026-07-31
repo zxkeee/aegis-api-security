@@ -1,0 +1,25 @@
+{
+  "name": "aegis-site-v3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5300 --host",
+    "build": "vite build",
+    "preview": "vite preview --port 5300 --host"
+  },
+  "dependencies": {
+    "@fontsource/fira-code": "^5.2.7",
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/libre-baskerville": "^5.2.10",
+    "@phosphor-icons/react": "^2.1.10",
+    "framer-motion": "^11.11.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "tailwindcss": "^4.0.0",
+    "vite": "^5.4.10"
+  }
+}
