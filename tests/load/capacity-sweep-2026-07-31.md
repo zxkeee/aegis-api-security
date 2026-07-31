@@ -122,6 +122,52 @@ number, independent of which backend sits behind AEGIS. It's good enough for
 vs observe, WAF on vs off at moderate VUs — see
 `observe-mode-results-2026-07-31.md` and the first table above), where both
 sides absorb the same noise. It is not good enough for "AEGIS handles N req/s"
-as a number to hand a prospective pilot partner. That needs either a quiet
-window on this hardware or, better, a dedicated/cloud instance not sharing
-resources with anything else — not done here.
+as a number to hand a prospective pilot partner on its own — see the
+noise-controlled re-run below.
+
+## Second follow-up (same day): re-run with the other ~30 services stopped
+
+With explicit authorization, stopped the 18 heaviest non-essential containers
+on the NUC for the duration of the run (Immich's 5 containers, Paperless's 3,
+Nextcloud's 3, Gitea, netdata, kiwix, tor-proxy, the nutrition-bot's 2,
+bmx-sender, watchtower) — left VPN (`wireguard`), the reverse proxy fronting
+`aegis.34host.org` (`npm-app-1`), `vaultwarden`, `portainer`, `homepage`,
+`nuc-dashboard`, `uptime-kuma`, and every `aegis-*` container running, since
+none of those were the CPU cost and some are load-bearing for remote access or
+the live demo site. Confirmed `load average` down to ~1 (from 16.9) before
+starting, then re-ran the identical lean-backend sweep:
+
+| Config | VUs | Throughput | p50 | p95 | Errors |
+|---|---:|---:|---:|---:|---:|
+| WAF on | 10 | 807.4 req/s | 5.78 ms | 10.66 ms | 0.00 % |
+| WAF on | 50 | 897.6 req/s | 22.33 ms | 139.84 ms | 0.00 % |
+| WAF on | 100 | 628.0 req/s | 24.68 ms | 629.45 ms | 1.19 % |
+| WAF on | 200 | 844.4 req/s | 115.80 ms | 534.12 ms | 0.00 % |
+| WAF off | 10 | 1005.8 req/s | 4.91 ms | 8.63 ms | 0.00 % |
+| WAF off | 50 | 750.6 req/s | 23.41 ms | 222.20 ms | 0.00 % |
+| WAF off | 100 | 703.4 req/s | 20.55 ms | 658.59 ms | 0.77 % |
+| WAF off | 200 | 720.0 req/s | 92.39 ms | 805.74 ms | 0.00 % |
+
+All 18 stopped containers were restarted immediately after the run and
+verified healthy (`docker ps`, no `starting`/`unhealthy`/`restarting` states);
+`aegis.34host.org` re-checked at 200 through the reverse proxy.
+
+**Reading**: throughput lands in the same 600–1000 req/s band as the noisy
+run, ruling out unrelated background load as the explanation for that range —
+this is AEGIS's own signal on this hardware. It is still not perfectly
+monotonic (WAF-on dips to 628 req/s at 100 VUs, with the first non-zero error
+rate of the whole sweep, 1.19%), but that's now plausibly *real* saturation
+onset — Coraza's rule evaluation is CPU-bound, and on a 4-core box, k6's own
+client-side load plus the gateway plus Redis are now the only three things
+competing for cores, which is a fundamentally different (and legitimate)
+source of variance than 30 unrelated containers. Errors start appearing at
+100+ VUs in both WAF-on and WAF-off — this is the honest onset of this
+specific box's ceiling, somewhere in the 600–900 req/s / ~100 concurrent
+requests range.
+
+**Still not a production capacity number.** This is a 2015 ultra-low-voltage
+4-core laptop chip — a real production host (server-grade, more cores, no
+Wi-Fi-hop client) will sit meaningfully higher. Read this as "AEGIS's floor on
+weak hardware," not "AEGIS's ceiling" — useful for sizing a worst case, not for
+a headline number to a prospective partner. That still needs dedicated/cloud
+hardware with a wired client, not done here.

@@ -255,12 +255,17 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       to 630–890 req/s, confirming the earlier ceiling was the backend — but
       the NUC's `load average` hit 16.9 on 4 cores (shared with ~30 other
       always-on services), which shows up as non-monotonic, sometimes-inverted
-      results (WAF-off slower than WAF-on at 200 VUs). **Still open: no
-      trustworthy absolute max-RPS number for AEGIS exists yet** — this
-      hardware is fine for relative comparisons (WAF on/off, enforce/observe)
-      run back-to-back under the same noise, not for a number to publish. Needs
-      a dedicated/cloud box not sharing resources with anything else, or a
-      quiet window on this one, plus a wired-LAN run to remove Wi-Fi noise too.
+      results (WAF-off slower than WAF-on at 200 VUs). Re-ran a third time with
+      the NUC's other ~30 containers stopped for the run (`load average` ~1
+      before starting, all restarted + verified healthy after): throughput
+      landed in the same 600–1000 req/s band, confirming that band is AEGIS's
+      own signal, not third-party noise; errors first appear at 100+ VUs on
+      both WAF-on/off — the honest onset of this box's ceiling. **Still open:
+      no *production-grade* max-RPS number exists** — this is a 2015
+      ultra-low-voltage 4-core laptop chip; read 600–900 req/s as "AEGIS's
+      floor on weak hardware," not its ceiling. Needs dedicated/cloud
+      server-grade hardware with a wired client for a number worth publishing
+      to a prospective partner.
 - [~] **Graceful failure under load.** Redis-outage behaviour verified two ways:
       (1) end-to-end unit matrix in `internal/middleware/degradation_test.go`
       (fail_closed → 503, default → 200, static blacklist still enforced, no
