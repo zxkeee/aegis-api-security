@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Ban, KeyRound, ShieldOff, Trash2 } from "lucide-react";
+import { Prohibit, Key, ShieldSlash, Trash } from "@phosphor-icons/react";
 import { useState } from "react";
 import { ErrorNote, PageHeader } from "@/components/PageBits";
 import { Button, Card, EmptyState, Input, Spinner } from "@/components/ui";
@@ -64,7 +64,7 @@ export function Access() {
         {/* IP blocklist */}
         <Card className="p-5">
           <h3 className="mb-4 flex items-center gap-2 text-sm font-medium">
-            <ShieldOff size={16} className="text-danger" /> IP blocklist
+            <ShieldSlash size={16} className="text-danger" /> IP blocklist
           </h3>
           <div className="flex gap-2">
             <Input
@@ -75,7 +75,7 @@ export function Access() {
               className="font-mono"
             />
             <Button onClick={block} disabled={busy === "block"}>
-              {busy === "block" ? <Spinner /> : <Ban size={16} />}
+              {busy === "block" ? <Spinner /> : <Prohibit size={16} />}
               Block
             </Button>
           </div>
@@ -95,7 +95,7 @@ export function Access() {
                 >
                   <span className="font-mono text-xs">{ip}</span>
                   <Button variant="ghost" size="icon" onClick={() => unblock(ip)} disabled={busy === ip} aria-label={`Unblock ${ip}`}>
-                    {busy === ip ? <Spinner /> : <Trash2 size={15} className="text-muted hover:text-danger" />}
+                    {busy === ip ? <Spinner /> : <Trash size={15} className="text-muted hover:text-danger" />}
                   </Button>
                 </motion.div>
               ))
@@ -108,7 +108,7 @@ export function Access() {
         {/* JWT revocation */}
         <Card className="h-fit p-5">
           <h3 className="mb-4 flex items-center gap-2 text-sm font-medium">
-            <KeyRound size={16} className="text-warn" /> Revoke a token
+            <Key size={16} className="text-warn" /> Revoke a token
           </h3>
           <p className="mb-3 text-xs text-muted">
             Enter a token's <code className="text-fg">jti</code> claim. It is rejected until the TTL (default 24h) expires.

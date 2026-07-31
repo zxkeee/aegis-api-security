@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle, XCircle } from "@phosphor-icons/react";
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 
 type Toast = { id: number; kind: "ok" | "err"; msg: string };
@@ -28,7 +28,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-elevated px-4 py-2.5 text-sm shadow-lg"
             >
               {t.kind === "ok" ? (
-                <CheckCircle2 size={16} className="text-ok" />
+                <CheckCircle size={16} className="text-ok" />
               ) : (
                 <XCircle size={16} className="text-danger" />
               )}

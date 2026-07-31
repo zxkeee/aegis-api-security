@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { Spinner } from "@/components/ui";
-import { api } from "@/lib/api";
+import { api, type Session } from "@/lib/api";
 import { Access } from "@/pages/Access";
 import { Catalog } from "@/pages/Catalog";
 import { Compliance } from "@/pages/Compliance";
@@ -12,10 +12,9 @@ import { Graph } from "@/pages/Graph";
 import { Login } from "@/pages/Login";
 import { Overview } from "@/pages/Overview";
 import { Posture } from "@/pages/Posture";
+import { Settings } from "@/pages/Settings";
 
-type Session = { tenant?: string; role?: string };
-
-const PAGES: Record<string, React.ComponentType> = {
+const PAGES: Record<string, React.ComponentType<{ session: Session }>> = {
   overview: Overview,
   catalog: Catalog,
   posture: Posture,
@@ -25,6 +24,7 @@ const PAGES: Record<string, React.ComponentType> = {
   map: Graph,
   forensics: Forensics,
   access: Access,
+  settings: Settings,
 };
 
 export default function App() {
@@ -33,10 +33,13 @@ export default function App() {
   const [active, setActive] = useState("overview");
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Probe the session cookie on load; skip the login screen if it's still valid.
+  // Probe the session cookie on load; skip the login screen if it's still
+  // valid, and rehydrate who's signed in (the login response only fires once,
+  // at login time, and doesn't survive a page refresh).
   const probe = useCallback(async () => {
     try {
-      await api.get("/api/metrics");
+      const s = await api.session();
+      setSession({ tenant: s.tenant, role: s.role, superAdmin: s.super_admin });
       setAuthed(true);
     } catch {
       setAuthed(false);
@@ -90,7 +93,7 @@ export default function App() {
       session={session}
     >
       <div key={`${active}-${refreshKey}`}>
-        <Page />
+        <Page session={session} />
       </div>
     </Shell>
   );

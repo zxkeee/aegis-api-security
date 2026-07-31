@@ -68,3 +68,8 @@ Thumbs.db
 *.bak
 *.orig
 *.rej
+
+# marketing site — captured leads (PII), never commit
+web/pilot-requests.jsonl
+web/v3/node_modules/
+web/v3/dist/

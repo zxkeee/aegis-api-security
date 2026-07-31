@@ -85,6 +85,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/auth/oidc/callback", h.oidcCallback)
 
 	// Admin endpoints (protected by AdminAuth middleware)
+	s.mux.HandleFunc("GET /api/session", h.getSession)
 	s.mux.HandleFunc("GET /api/metrics", h.getMetrics)
 	s.mux.HandleFunc("GET /metrics", h.prometheus) // Prometheus-native exposition
 	s.mux.HandleFunc("GET /api/config", h.getConfig)

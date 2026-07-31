@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "@phosphor-icons/react";
 import { MethodBadge, SeverityBadge } from "@/components/badges";
 import { ErrorNote, PageHeader } from "@/components/PageBits";
 import { Card, EmptyState, Skeleton } from "@/components/ui";

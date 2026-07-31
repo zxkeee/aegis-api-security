@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { KeyRound, Mail, ShieldCheck } from "lucide-react";
+import { Key, EnvelopeSimple, ShieldCheck } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { Button, Card, Input, Spinner } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -9,7 +9,7 @@ interface Env {
   sso: boolean;
 }
 
-export function Login({ onAuthed }: { onAuthed: (s: { tenant?: string; role?: string }) => void }) {
+export function Login({ onAuthed }: { onAuthed: (s: { tenant?: string; role?: string; superAdmin?: boolean }) => void }) {
   const [env, setEnv] = useState<Env | null>(null);
   const [mode, setMode] = useState<"secret" | "password">("secret");
   const [secret, setSecret] = useState("");
@@ -38,7 +38,7 @@ export function Login({ onAuthed }: { onAuthed: (s: { tenant?: string; role?: st
         mode === "secret"
           ? await api.loginSecret(secret.trim())
           : await api.loginPassword(email.trim().toLowerCase(), password, tenant.trim() || undefined);
-      onAuthed({ tenant: resp.tenant, role: resp.role });
+      onAuthed({ tenant: resp.tenant, role: resp.role, superAdmin: resp.super_admin });
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : "Invalid credentials");
     } finally {
@@ -65,7 +65,7 @@ export function Login({ onAuthed }: { onAuthed: (s: { tenant?: string; role?: st
               <ShieldCheck size={22} />
             </div>
             <div>
-              <h1 className="text-lg font-semibold tracking-tight">AEGIS</h1>
+              <h1 className="font-serif text-lg tracking-tight">AEGIS</h1>
               <p className="text-xs text-muted">API Protection Console</p>
             </div>
           </div>
@@ -75,7 +75,7 @@ export function Login({ onAuthed }: { onAuthed: (s: { tenant?: string; role?: st
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-muted">Admin secret</span>
                 <div className="relative">
-                  <KeyRound size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted/60" />
+                  <Key size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted/60" />
                   <Input
                     type="password"
                     autoFocus
@@ -91,7 +91,7 @@ export function Login({ onAuthed }: { onAuthed: (s: { tenant?: string; role?: st
                 <label className="block">
                   <span className="mb-1.5 block text-xs font-medium text-muted">Email</span>
                   <div className="relative">
-                    <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted/60" />
+                    <EnvelopeSimple size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted/60" />
                     <Input
                       type="email"
                       autoComplete="username"

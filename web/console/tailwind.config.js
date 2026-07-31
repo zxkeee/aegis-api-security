@@ -21,7 +21,8 @@ export default {
       },
       fontFamily: {
         sans: ['"Inter"', "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
-        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        mono: ['"Fira Code"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        serif: ['"Libre Baskerville"', "Georgia", "serif"],
       },
       borderRadius: {
         lg: "0.75rem",

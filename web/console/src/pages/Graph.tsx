@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Share2 } from "lucide-react";
+import { ShareNetwork } from "@phosphor-icons/react";
 import { ErrorNote, PageHeader } from "@/components/PageBits";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
 import { api, type Graph as GraphData, type GraphNode } from "@/lib/api";
@@ -94,7 +94,7 @@ export function Graph() {
         <Skeleton className="h-[60vh] w-full" />
       ) : !data || data.nodes.length === 0 ? (
         <EmptyState
-          icon={<Share2 size={40} />}
+          icon={<ShareNetwork size={40} />}
           title="No traffic yet"
           hint="Drive requests through the gateway (:8080) so the consumer→endpoint map can build."
         />

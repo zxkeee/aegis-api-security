@@ -6,10 +6,14 @@ const ThemeCtx = createContext<{ theme: Theme; toggle: () => void }>({
   toggle: () => {},
 });
 
+// Dark is the brand identity (matches the marketing site, which has no light
+// mode at all) — default to it regardless of system preference. The toggle
+// still exists for operators who want light; it just doesn't win on first
+// visit the way prefers-color-scheme used to.
 function initial(): Theme {
   const saved = localStorage.getItem("aegis-theme");
   if (saved === "light" || saved === "dark") return saved;
-  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  return "dark";
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

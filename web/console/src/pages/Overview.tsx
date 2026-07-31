@@ -1,10 +1,12 @@
 import { motion } from "framer-motion";
-import { Ban, CheckCircle2, Gauge, ShieldAlert, Boxes, Radar } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Prohibit, CheckCircle, Gauge, ShieldWarning, Package, ChartDonut, Pulse } from "@phosphor-icons/react";
+import { MethodBadge, SeverityBadge } from "@/components/badges";
 import { PageHeader, StatCard, stagger, Table, Th, Row, Td } from "@/components/PageBits";
-import { Badge, Card } from "@/components/ui";
-import { api, type Effectiveness, type PostureSummary } from "@/lib/api";
+import { Badge, Card, EmptyState } from "@/components/ui";
+import { api, type BlockEntry, type Effectiveness, type PostureSummary } from "@/lib/api";
 import { useData } from "@/lib/hooks";
-import { fmt, pct } from "@/lib/utils";
+import { fmt, pct, timeAgo } from "@/lib/utils";
 
 const CONTROL_LABEL: Record<string, string> = {
   waf: "WAF",
@@ -16,35 +18,78 @@ const CONTROL_LABEL: Record<string, string> = {
   dlp: "DLP",
 };
 
+/** Tracks the increase in a counter between polls, for a small "+N" delta chip. */
+function useDelta(value: number | undefined) {
+  const prev = useRef<number | undefined>(undefined);
+  const [delta, setDelta] = useState<number | null>(null);
+  useEffect(() => {
+    if (value == null) return;
+    if (prev.current != null && value > prev.current) setDelta(value - prev.current);
+    prev.current = value;
+  }, [value]);
+  return delta;
+}
+
+function DeltaChip({ n }: { n: number | null }) {
+  if (!n) return null;
+  return (
+    <motion.span
+      key={n}
+      initial={{ opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="rounded-full bg-ok/12 px-1.5 py-0.5 text-[11px] font-medium tnum text-ok"
+    >
+      +{fmt(n)}
+    </motion.span>
+  );
+}
+
 export function Overview() {
   const eff = useData<Effectiveness>(() => api.get("/api/effectiveness"), [], 10000);
-  const posture = useData<PostureSummary>(() => api.get("/api/posture/summary"), []);
+  const posture = useData<PostureSummary>(() => api.get("/api/posture/summary"), [], 20000);
+  const log = useData<BlockEntry[]>(() => api.get("/api/block-log"), [], 10000);
 
   const blocks = eff.data?.blocks_by_control ?? {};
   const totalBlocks = eff.data?.total_blocks ?? 0;
   const passed = eff.data?.passed_waf ?? 0;
   const coverage = posture.data?.coverage_pct;
 
+  const passedDelta = useDelta(eff.data ? passed : undefined);
+  const blocksDelta = useDelta(eff.data ? totalBlocks : undefined);
+
+  const live = !eff.error;
+
   return (
     <div>
-      <PageHeader title="Overview" desc="Live protection posture and control effectiveness." />
+      <PageHeader
+        title="Overview"
+        desc="Live protection posture and control effectiveness."
+        action={
+          <span className="flex items-center gap-2 text-xs text-muted">
+            <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-ok" : "bg-danger"}`} />
+            {live ? "Live" : "Unreachable"}
+          </span>
+        }
+      />
 
       <motion.div variants={stagger} initial="hidden" animate="show" className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
           label="Requests passed"
           value={fmt(passed)}
-          icon={<CheckCircle2 size={18} />}
+          icon={<CheckCircle size={18} />}
           tone="accent"
           loading={eff.loading}
           hint="Clean through the WAF"
+          delta={<DeltaChip n={passedDelta} />}
         />
         <StatCard
           label="Total blocks"
           value={fmt(totalBlocks)}
-          icon={<Ban size={18} />}
+          icon={<Prohibit size={18} />}
           tone="danger"
           loading={eff.loading}
           hint="Across all controls"
+          delta={<DeltaChip n={blocksDelta} />}
         />
         <StatCard
           label="Coverage"
@@ -57,7 +102,7 @@ export function Overview() {
         <StatCard
           label="Endpoints"
           value={fmt(posture.data?.total)}
-          icon={<Boxes size={18} />}
+          icon={<Package size={18} />}
           loading={posture.loading}
           hint="Discovered surface"
         />
@@ -67,7 +112,7 @@ export function Overview() {
         {/* Blocks by control */}
         <div>
           <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
-            <ShieldAlert size={15} /> Blocks by control
+            <ShieldWarning size={15} /> Blocks by control
           </h3>
           <Card className="p-5">
             <BarList data={blocks} labels={CONTROL_LABEL} />
@@ -77,7 +122,7 @@ export function Overview() {
         {/* Posture split */}
         <div>
           <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
-            <Radar size={15} /> Posture distribution
+            <ChartDonut size={15} /> Posture distribution
           </h3>
           <Card className="p-5">
             {posture.data ? (
@@ -94,35 +139,68 @@ export function Overview() {
         </div>
       </div>
 
-      {/* Top risky endpoints */}
-      {posture.data?.top_risky?.length ? (
-        <div className="mt-6">
-          <h3 className="mb-3 text-sm font-medium text-muted">Top risk endpoints</h3>
-          <Table
-            head={
-              <>
-                <Th>Endpoint</Th>
-                <Th className="text-right">Risk</Th>
-                <Th className="hidden text-right sm:table-cell">Requests</Th>
-              </>
-            }
-          >
-            {posture.data.top_risky.slice(0, 6).map((e, i) => (
-              <Row key={e.id} i={i}>
-                <Td className="font-mono text-xs">
-                  <span className="text-accent">{e.method}</span> {e.path_template}
-                </Td>
-                <Td className="text-right">
-                  <Badge tone={e.risk_score >= 70 ? "danger" : e.risk_score >= 40 ? "warn" : "neutral"}>
-                    {e.risk_score}
-                  </Badge>
-                </Td>
-                <Td className="hidden text-right tnum sm:table-cell">{fmt(e.request_count)}</Td>
-              </Row>
-            ))}
-          </Table>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        {/* Recent activity */}
+        <div>
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
+            <Pulse size={15} /> Recent activity
+          </h3>
+          <Card className="divide-y divide-border/60">
+            {!log.data?.length ? (
+              <EmptyState title="No events yet" hint="Blocks and abuse detections will stream in here." />
+            ) : (
+              log.data.slice(0, 6).map((e, i) => {
+                const severity = typeof e.extra?.severity === "string" ? e.extra.severity : undefined;
+                return (
+                  <div key={i} className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {severity && <SeverityBadge severity={severity} />}
+                      <span className="truncate text-muted">{e.reason.replace(/_/g, " ")}</span>
+                      <MethodBadge method={e.method} />
+                      <span className="truncate font-mono text-muted/80">{e.path}</span>
+                    </div>
+                    <span className="shrink-0 text-muted/70">{timeAgo(e.timestamp)}</span>
+                  </div>
+                );
+              })
+            )}
+          </Card>
         </div>
-      ) : null}
+
+        {/* Top risky endpoints */}
+        <div>
+          <h3 className="mb-3 text-sm font-medium text-muted">Top risk endpoints</h3>
+          {posture.data?.top_risky?.length ? (
+            <Table
+              head={
+                <>
+                  <Th>Endpoint</Th>
+                  <Th className="text-right">Risk</Th>
+                  <Th className="hidden text-right sm:table-cell">Requests</Th>
+                </>
+              }
+            >
+              {posture.data.top_risky.slice(0, 6).map((e, i) => (
+                <Row key={e.id} i={i}>
+                  <Td className="font-mono text-xs">
+                    <span className="text-accent">{e.method}</span> {e.path_template}
+                  </Td>
+                  <Td className="text-right">
+                    <Badge tone={e.risk_score >= 70 ? "danger" : e.risk_score >= 40 ? "warn" : "neutral"}>
+                      {e.risk_score}
+                    </Badge>
+                  </Td>
+                  <Td className="hidden text-right tnum sm:table-cell">{fmt(e.request_count)}</Td>
+                </Row>
+              ))}
+            </Table>
+          ) : (
+            <Card>
+              <EmptyState title="No risk data yet" hint="Populates once the catalog scores discovered endpoints." />
+            </Card>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

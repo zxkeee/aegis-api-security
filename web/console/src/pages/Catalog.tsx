@@ -1,4 +1,4 @@
-import { Search } from "lucide-react";
+import { MagnifyingGlass } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
 import { MethodBadge, PostureBadge, RiskDot } from "@/components/badges";
 import { ErrorNote, PageHeader, Row, Table, Td, Th } from "@/components/PageBits";
@@ -33,7 +33,7 @@ export function Catalog() {
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative min-w-[16rem] flex-1">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted/60" />
+          <MagnifyingGlass size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted/60" />
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search endpoints…" className="pl-9" />
         </div>
         <div className="flex gap-1 rounded-lg border border-border bg-surface p-1">

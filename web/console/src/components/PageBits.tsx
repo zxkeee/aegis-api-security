@@ -19,6 +19,7 @@ export function StatCard({
   tone = "fg",
   hint,
   loading,
+  delta,
 }: {
   label: string;
   value: ReactNode;
@@ -26,6 +27,8 @@ export function StatCard({
   tone?: "fg" | "accent" | "danger" | "warn";
   hint?: string;
   loading?: boolean;
+  /** Small "+N since last poll" style indicator, shown beside the value. */
+  delta?: ReactNode;
 }) {
   const toneCls = { fg: "text-fg", accent: "text-accent", danger: "text-danger", warn: "text-warn" }[tone];
   return (
@@ -38,7 +41,10 @@ export function StatCard({
         {loading ? (
           <Skeleton className="mt-3 h-8 w-20" />
         ) : (
-          <div className={cn("mt-2 text-3xl font-semibold tnum tracking-tight", toneCls)}>{value}</div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className={cn("text-3xl font-semibold tnum tracking-tight", toneCls)}>{value}</span>
+            {delta}
+          </div>
         )}
         {hint && <p className="mt-1 text-xs text-muted">{hint}</p>}
       </Card>
@@ -50,7 +56,7 @@ export function PageHeader({ title, desc, action }: { title: string; desc?: stri
   return (
     <div className="mb-6 flex items-end justify-between gap-4">
       <div>
-        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        <h2 className="font-serif text-2xl tracking-tight">{title}</h2>
         {desc && <p className="mt-0.5 text-sm text-muted">{desc}</p>}
       </div>
       {action}

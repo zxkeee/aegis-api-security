@@ -157,10 +157,11 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		"user":   sess.UserID,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"csrf":   csrf,
-		"auth":   true,
-		"tenant": sess.TenantID,
-		"role":   string(sess.Role),
+		"csrf":        csrf,
+		"auth":        true,
+		"tenant":      sess.TenantID,
+		"role":        string(sess.Role),
+		"super_admin": sess.SuperAdmin,
 	})
 }
 
@@ -212,6 +213,18 @@ func (h *handlers) establishSession(ctx context.Context, w http.ResponseWriter, 
 
 // logout invalidates the current session and clears the cookie.
 // POST /api/logout
+// GET /api/session — the caller's own tenant/role/super-admin flag, read
+// straight from the request context AdminAuth already populated. The console
+// calls this on every load to rehydrate who's signed in (the login response
+// is only seen once, at login time, and doesn't survive a page refresh).
+func (h *handlers) getSession(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tenant":      tenant.From(r.Context()),
+		"role":        string(iam.FromContext(r.Context())),
+		"super_admin": iam.IsSuperAdmin(r.Context()),
+	})
+}
+
 func (h *handlers) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(middleware.SessionCookie); err == nil && c.Value != "" {
 		_ = h.store.DeleteSession(r.Context(), c.Value)

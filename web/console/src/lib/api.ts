@@ -57,6 +57,24 @@ export const api = {
   loginPassword: (email: string, password: string, tenant?: string) =>
     request<LoginResp>("POST", "/api/login", { email, password, tenant }),
   logout: () => request<unknown>("POST", "/api/logout"),
+  session: () => request<SessionResp>("GET", "/api/session"),
+
+  // ── Tenants & users (Settings page) ──
+  listTenants: () => request<{ tenants: Tenant[]; count: number }>("GET", "/api/tenants"),
+  createTenant: (id: string, name: string) => request<Tenant>("POST", "/api/tenants", { id, name }),
+  deleteTenant: (id: string) => request<{ id: string; deleted: boolean }>("DELETE", `/api/tenants/${encodeURIComponent(id)}`),
+  listUsers: (tenant?: string) => request<{ users: IamUser[]; count: number }>("GET", tenant ? `/api/users?tenant=${encodeURIComponent(tenant)}` : "/api/users"),
+  createUser: (body: { email: string; password: string; role: string; tenant?: string; super_admin?: boolean }) =>
+    request<IamUser>("POST", "/api/users", body),
+  deleteUser: (id: string) => request<{ id: string; deleted: boolean }>("DELETE", `/api/users/${encodeURIComponent(id)}`),
+  audit: (params: { action?: string; limit?: number; all?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (params.action) q.set("action", params.action);
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.all) q.set("all", "true");
+    const qs = q.toString();
+    return request<{ entries: AuditEntry[]; count: number }>("GET", `/api/audit${qs ? `?${qs}` : ""}`);
+  },
 };
 
 // ── Response types ──
@@ -65,6 +83,46 @@ export interface LoginResp {
   csrf: string;
   tenant?: string;
   role?: string;
+  super_admin?: boolean;
+}
+
+export interface SessionResp {
+  tenant: string;
+  role: string;
+  super_admin: boolean;
+}
+
+/** Client-side session shape held in App state, threaded down to pages. */
+export type Session = { tenant?: string; role?: string; superAdmin?: boolean };
+
+export interface Tenant {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface IamUser {
+  id: string;
+  tenant_id: string;
+  email: string;
+  role: string;
+  super_admin: boolean;
+  created_at: string;
+}
+
+export interface AuditEntry {
+  time: string;
+  tenant_id: string;
+  actor_id?: string;
+  actor_email?: string;
+  role?: string;
+  super_admin?: boolean;
+  action: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  ip?: string;
+  detail?: string;
 }
 
 export type Metrics = Record<string, number>;
