@@ -190,7 +190,9 @@ func (s *site) pilot(w http.ResponseWriter, r *http.Request) {
 			}
 		}(s.mail, rec)
 	}
-	log.Printf("pilot request: %s <%s> company=%q ip=%s", hdr(rec.Name), hdr(rec.Email), hdr(rec.Company), ip)
+	// #nosec G706 -- every field is passed through hdr() (strips CR/LF/control
+	// chars), gosec's taint tracker just doesn't recognise a local sanitizer.
+	log.Printf("pilot request: %s <%s> company=%q ip=%s", hdr(rec.Name), hdr(rec.Email), hdr(rec.Company), hdr(ip))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

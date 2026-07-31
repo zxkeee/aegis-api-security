@@ -30,6 +30,12 @@ jobs:
       - name: Run golangci-lint
         run: golangci-lint run --timeout 5m ./...
 
+      # web/ is a separate Go module (its own go.mod) — the run above does not
+      # descend into it.
+      - name: Run golangci-lint (web/ module)
+        working-directory: web
+        run: golangci-lint run --timeout 5m ./...
+
       # Guard against accidentally committing compiled artifacts (e.g. the 8 MB
       # loadgen binary that once sat untracked in the repo root).
       - name: Check for committed binaries

@@ -69,3 +69,9 @@ jobs:
         with:
           file: ./coverage.out
           flags: unittests
+
+      # web/ is a separate Go module (its own go.mod) — go test ./... at the
+      # repo root does not descend into it, so it needs its own step.
+      - name: Test web/ module (marketing site)
+        working-directory: web
+        run: go test ./... -v -race
