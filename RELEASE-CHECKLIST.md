@@ -247,13 +247,20 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       early). **VU sweep (10/50/100/200) + WAF on/off split** run on the NUC
       (`tests/load/capacity-sweep-2026-07-31.md`): WAF overhead is small and
       flat at moderate load (~5–7% throughput, few ms latency). Honest finding,
-      not hidden: the sweep hit the shared demo backend's ceiling (~400–450
-      req/s, flat across VU counts) before AEGIS's own — at 200 VUs with WAF
-      off the backend saturates and the circuit breaker opens (no second
-      upstream configured), which is the correct behaviour but means AEGIS's
-      *own* max-RPS still isn't isolated. Still to do: swap in a
-      purpose-built high-throughput backend to find AEGIS's actual ceiling;
-      wired-LAN run to remove Wi-Fi noise from the absolute numbers.
+      not hidden: the first sweep hit the shared demo backend's ceiling
+      (~400–450 req/s, flat across VU counts) before AEGIS's own — at 200 VUs
+      with WAF off the backend saturated and the circuit breaker opened (no
+      second upstream configured), correct behaviour but not an AEGIS number.
+      Re-run same day against a purpose-built no-op Go backend: throughput rose
+      to 630–890 req/s, confirming the earlier ceiling was the backend — but
+      the NUC's `load average` hit 16.9 on 4 cores (shared with ~30 other
+      always-on services), which shows up as non-monotonic, sometimes-inverted
+      results (WAF-off slower than WAF-on at 200 VUs). **Still open: no
+      trustworthy absolute max-RPS number for AEGIS exists yet** — this
+      hardware is fine for relative comparisons (WAF on/off, enforce/observe)
+      run back-to-back under the same noise, not for a number to publish. Needs
+      a dedicated/cloud box not sharing resources with anything else, or a
+      quiet window on this one, plus a wired-LAN run to remove Wi-Fi noise too.
 - [~] **Graceful failure under load.** Redis-outage behaviour verified two ways:
       (1) end-to-end unit matrix in `internal/middleware/degradation_test.go`
       (fail_closed → 503, default → 200, static blacklist still enforced, no

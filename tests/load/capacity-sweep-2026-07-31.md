@@ -82,3 +82,46 @@ protects the backend from overload" without a dedicated test for that claim.
 - A raw-backend-only k6 run (bypassing AEGIS entirely) would separate "backend
   ceiling" from "AEGIS overhead" cleanly — still on the existing TODO list in
   `tests/load/README.md`/`results-2026-06-21.md`.
+
+## Follow-up (same day): backend swap confirms the diagnosis, hardware caveat found instead
+
+Re-ran the identical sweep against a trivial Go no-op handler (`{"ok":true}`,
+no logging, no work) instead of `aegis-demo-backend`, same NUC, same isolated
+Redis, same two WAF configs:
+
+| Config | VUs | Throughput | p50 | p95 | Errors |
+|---|---:|---:|---:|---:|---:|
+| WAF on | 10 | 716.6 req/s | 6.54 ms | 16.94 ms | 0.00 % |
+| WAF on | 50 | 671.5 req/s | 24.11 ms | 233.92 ms | 0.00 % |
+| WAF on | 100 | 729.1 req/s | 49.86 ms | 370.20 ms | 0.00 % |
+| WAF on | 200 | 769.9 req/s | 92.25 ms | 632.68 ms | 0.00 % |
+| WAF off | 10 | 892.8 req/s | 5.68 ms | 12.40 ms | 0.00 % |
+| WAF off | 50 | 631.0 req/s | 24.28 ms | 260.85 ms | 0.00 % |
+| WAF off | 100 | 775.4 req/s | 32.46 ms | 448.55 ms | 0.06 % |
+| WAF off | 200 | 674.8 req/s | 76.63 ms | 972.14 ms | 0.00 % |
+
+**Confirms the diagnosis**: throughput jumped from a flat ~400–450 req/s to a
+630–890 req/s range the moment the weak backend was replaced — the earlier
+ceiling really was `aegis-demo-backend`, not AEGIS.
+
+**But this run is not clean enough to publish as "AEGIS's max RPS" either.**
+`uptime` on the NUC read **load average 16.9 on 4 cores** near the end of this
+run — the box was ~4x oversubscribed from its other ~30 always-on services
+(Immich, Nextcloud, Paperless, etc.), not from this test alone. That noise
+shows in the numbers: WAF-off at 200 VUs (674.8 req/s, p95 972 ms) is *slower*
+than WAF-on at 200 VUs (769.9 req/s, p95 633 ms) — the opposite of what WAF
+overhead should ever produce, and throughput is non-monotonic across VU counts
+in both rows (e.g. WAF-off 50 VUs < WAF-off 10 VUs). This is CPU contention
+from concurrent unrelated load, not a signal about AEGIS or the WAF.
+
+**Honest conclusion**: this NUC — a 2015 ultra-low-voltage laptop chip (Intel
+i5-5250U, 4 cores/1.6 GHz), shared with ~30 unrelated always-on services — is
+not a clean enough environment to publish a trustworthy absolute capacity
+number, independent of which backend sits behind AEGIS. It's good enough for
+*relative* comparisons run back-to-back under the same ambient load (enforce
+vs observe, WAF on vs off at moderate VUs — see
+`observe-mode-results-2026-07-31.md` and the first table above), where both
+sides absorb the same noise. It is not good enough for "AEGIS handles N req/s"
+as a number to hand a prospective pilot partner. That needs either a quiet
+window on this hardware or, better, a dedicated/cloud instance not sharing
+resources with anything else — not done here.
