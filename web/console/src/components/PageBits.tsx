@@ -15,7 +15,6 @@ export const item = {
 export function StatCard({
   label,
   value,
-  icon,
   tone = "fg",
   hint,
   loading,
@@ -23,6 +22,8 @@ export function StatCard({
 }: {
   label: string;
   value: ReactNode;
+  /** @deprecated kept for call-site compatibility; no longer rendered — the
+   * card reads as number-led (Vercel/Linear register), not icon-led. */
   icon?: ReactNode;
   tone?: "fg" | "accent" | "danger" | "warn";
   hint?: string;
@@ -30,25 +31,37 @@ export function StatCard({
   /** Small "+N since last poll" style indicator, shown beside the value. */
   delta?: ReactNode;
 }) {
-  const toneCls = { fg: "text-fg", accent: "text-accent", danger: "text-danger", warn: "text-warn" }[tone];
+  const toneCls = { fg: "text-fg", accent: "text-fg", danger: "text-fg", warn: "text-fg" }[tone];
   return (
     <motion.div variants={item}>
-      <Card className="group relative overflow-hidden p-5 transition-colors hover:border-accent/40">
-        <div className="flex items-start justify-between">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">{label}</span>
-          {icon && <span className="text-muted/50 transition-colors group-hover:text-accent">{icon}</span>}
-        </div>
+      <Card className="p-5">
+        <span className="text-[13px] text-muted">{label}</span>
         {loading ? (
-          <Skeleton className="mt-3 h-8 w-20" />
+          <Skeleton className="mt-3.5 h-8 w-24" />
         ) : (
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className={cn("text-3xl font-semibold tnum tracking-tight", toneCls)}>{value}</span>
-            {delta}
+          <div className="mt-3.5 text-[28px] font-bold tnum leading-none tracking-tight">
+            <span className={toneCls}>{value}</span>
           </div>
         )}
-        {hint && <p className="mt-1 text-xs text-muted">{hint}</p>}
+        <div className="mt-3.5 flex items-center gap-1.5 text-[12px] text-muted">{delta ?? (hint && <span>{hint}</span>)}</div>
       </Card>
     </motion.div>
+  );
+}
+
+/** Monochrome delta: small colored arrow+value, then muted context text —
+ * no filled badge/pill. Color is used only as a one-word signal, never as a
+ * background fill, per the product's "no rainbow" visual rule. */
+export function Delta({ dir, children, context }: { dir: "up" | "down" | "flat"; children: ReactNode; context?: ReactNode }) {
+  const cls = dir === "down" ? "text-danger" : "text-muted";
+  const arrow = dir === "up" ? "↑" : dir === "down" ? "↓" : "";
+  return (
+    <>
+      <span className={cn("inline-flex items-center gap-0.5 font-medium tnum", cls)}>
+        {arrow} {children}
+      </span>
+      {context && <span>{context}</span>}
+    </>
   );
 }
 

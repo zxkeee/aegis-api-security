@@ -1,9 +1,9 @@
 import { motion } from "framer-motion";
-import { useEffect, useRef, useState } from "react";
-import { Prohibit, CheckCircle, Gauge, ShieldWarning, Package, ChartDonut, Pulse } from "@phosphor-icons/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, ClipboardText, Key, ListMagnifyingGlass, Warning } from "@phosphor-icons/react";
 import { MethodBadge, SeverityBadge } from "@/components/badges";
-import { PageHeader, StatCard, stagger, Table, Th, Row, Td } from "@/components/PageBits";
-import { Badge, Card, EmptyState } from "@/components/ui";
+import { Delta, PageHeader, StatCard, stagger } from "@/components/PageBits";
+import { Card, EmptyState } from "@/components/ui";
 import { api, type BlockEntry, type Effectiveness, type PostureSummary } from "@/lib/api";
 import { useData } from "@/lib/hooks";
 import { fmt, pct, timeAgo } from "@/lib/utils";
@@ -18,7 +18,7 @@ const CONTROL_LABEL: Record<string, string> = {
   dlp: "DLP",
 };
 
-/** Tracks the increase in a counter between polls, for a small "+N" delta chip. */
+/** Tracks the increase in a counter between polls, for a delta indicator. */
 function useDelta(value: number | undefined) {
   const prev = useRef<number | undefined>(undefined);
   const [delta, setDelta] = useState<number | null>(null);
@@ -30,21 +30,27 @@ function useDelta(value: number | undefined) {
   return delta;
 }
 
-function DeltaChip({ n }: { n: number | null }) {
-  if (!n) return null;
-  return (
-    <motion.span
-      key={n}
-      initial={{ opacity: 0, y: -4 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="rounded-full bg-ok/12 px-1.5 py-0.5 text-[11px] font-medium tnum text-ok"
-    >
-      +{fmt(n)}
-    </motion.span>
-  );
+/** Accumulates real polled values into a short in-memory series. This is a
+ * genuinely live chart, not a fabricated history: the backend has no
+ * time-series store today (only cumulative counters), so there is no honest
+ * way to show "last 24h" here. What's shown is real data observed since this
+ * page was opened — labelled that way, not dressed up as more than it is. */
+function useLiveSeries(value: number | undefined, maxPoints = 60) {
+  const [series, setSeries] = useState<number[]>([]);
+  const prev = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (value == null) return;
+    if (prev.current != null) {
+      const d = Math.max(0, value - prev.current);
+      setSeries((s) => [...s.slice(-(maxPoints - 1)), d]);
+    }
+    prev.current = value;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return series;
 }
 
-export function Overview() {
+export function Overview({ onNavigate }: { onNavigate?: (key: string) => void }) {
   const eff = useData<Effectiveness>(() => api.get("/api/effectiveness"), [], 10000);
   const posture = useData<PostureSummary>(() => api.get("/api/posture/summary"), [], 20000);
   const log = useData<BlockEntry[]>(() => api.get("/api/block-log"), [], 10000);
@@ -56,8 +62,14 @@ export function Overview() {
 
   const passedDelta = useDelta(eff.data ? passed : undefined);
   const blocksDelta = useDelta(eff.data ? totalBlocks : undefined);
+  const passedSeries = useLiveSeries(eff.data ? passed : undefined);
 
   const live = !eff.error;
+
+  const criticalCount = useMemo(
+    () => log.data?.filter((e) => e.extra?.severity === "critical").length ?? 0,
+    [log.data],
+  );
 
   return (
     <div>
@@ -76,132 +88,109 @@ export function Overview() {
         <StatCard
           label="Requests passed"
           value={fmt(passed)}
-          icon={<CheckCircle size={18} />}
-          tone="accent"
           loading={eff.loading}
-          hint="Clean through the WAF"
-          delta={<DeltaChip n={passedDelta} />}
+          delta={passedDelta ? <Delta dir="up" context=" since last poll">+{fmt(passedDelta)}</Delta> : <span>clean through the WAF</span>}
         />
         <StatCard
           label="Total blocks"
           value={fmt(totalBlocks)}
-          icon={<Prohibit size={18} />}
-          tone="danger"
           loading={eff.loading}
-          hint="Across all controls"
-          delta={<DeltaChip n={blocksDelta} />}
+          delta={blocksDelta ? <Delta dir="down" context=" since last poll">+{fmt(blocksDelta)}</Delta> : <span>across all controls</span>}
         />
-        <StatCard
-          label="Coverage"
-          value={pct(coverage)}
-          icon={<Gauge size={18} />}
-          tone="warn"
-          loading={posture.loading}
-          hint="Protected endpoints"
-        />
-        <StatCard
-          label="Endpoints"
-          value={fmt(posture.data?.total)}
-          icon={<Package size={18} />}
-          loading={posture.loading}
-          hint="Discovered surface"
-        />
+        <StatCard label="Coverage" value={pct(coverage)} loading={posture.loading} hint="protected endpoints" />
+        <StatCard label="Active findings" value={fmt(criticalCount || undefined)} loading={log.loading} hint="critical, last 300 events" />
       </motion.div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        {/* Blocks by control */}
-        <div>
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
-            <ShieldWarning size={15} /> Blocks by control
-          </h3>
-          <Card className="p-5">
-            <BarList data={blocks} labels={CONTROL_LABEL} />
-          </Card>
+      <Card className="mt-4 p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-[15px] font-semibold">Requests passed</h3>
+            <p className="mt-0.5 text-xs text-faint text-muted">live — accumulated since this page opened, not a stored history</p>
+          </div>
         </div>
+        <LiveChart series={passedSeries} />
+      </Card>
 
-        {/* Posture split */}
-        <div>
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
-            <ChartDonut size={15} /> Posture distribution
-          </h3>
-          <Card className="p-5">
-            {posture.data ? (
-              <div className="space-y-3">
-                <PostureBar label="Protected" n={posture.data.protected} total={posture.data.total} tone="bg-ok" />
-                <PostureBar label="Partial" n={posture.data.partial} total={posture.data.total} tone="bg-warn" />
-                <PostureBar label="Unprotected" n={posture.data.unprotected} total={posture.data.total} tone="bg-danger" />
-                <PostureBar label="Shadow" n={posture.data.shadow} total={posture.data.total} tone="bg-danger/60" />
-              </div>
-            ) : (
-              <div className="h-32" />
-            )}
-          </Card>
-        </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_1fr_1fr]">
+        <Card className="p-6">
+          <h3 className="text-[15px] font-semibold">Blocks by control</h3>
+          <p className="mt-0.5 text-xs text-muted">since process start</p>
+          <BarList data={blocks} labels={CONTROL_LABEL} />
+        </Card>
+
+        <Card className="p-6">
+          <h3 className="text-[15px] font-semibold">Posture</h3>
+          <p className="mt-0.5 text-xs text-muted">{posture.data ? `${fmt(posture.data.total)} endpoints` : " "}</p>
+          <PostureDonut data={posture.data} onNavigate={onNavigate} />
+        </Card>
+
+        <Card className="p-6">
+          <h3 className="text-[15px] font-semibold">Quick actions</h3>
+          <p className="mt-0.5 text-xs text-muted">Jump to what needs attention.</p>
+          <div className="mt-3 flex flex-col">
+            <QuickAction
+              icon={<Warning size={16} />}
+              title={criticalCount ? `Review ${criticalCount} critical event${criticalCount === 1 ? "" : "s"}` : "Review findings"}
+              hint="Confirmed IDOR, PII exposure"
+              onClick={() => onNavigate?.("findings")}
+            />
+            <QuickAction
+              icon={<ClipboardText size={16} />}
+              title="Export compliance report"
+              hint="NIS2 / ISO 27001 mapping"
+              onClick={() => onNavigate?.("compliance")}
+            />
+            <QuickAction
+              icon={<ListMagnifyingGlass size={16} />}
+              title="Browse the catalog"
+              hint={posture.data ? `${fmt(posture.data.unprotected + posture.data.shadow)} unprotected or shadow` : undefined}
+              onClick={() => onNavigate?.("catalog")}
+            />
+            <QuickAction icon={<Key size={16} />} title="Manage access" hint="Tenants, users, roles" onClick={() => onNavigate?.("access")} />
+          </div>
+        </Card>
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        {/* Recent activity */}
-        <div>
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
-            <Pulse size={15} /> Recent activity
-          </h3>
-          <Card className="divide-y divide-border/60">
-            {!log.data?.length ? (
-              <EmptyState title="No events yet" hint="Blocks and abuse detections will stream in here." />
-            ) : (
-              log.data.slice(0, 6).map((e, i) => {
-                const severity = typeof e.extra?.severity === "string" ? e.extra.severity : undefined;
-                return (
-                  <div key={i} className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs">
-                    <div className="flex min-w-0 items-center gap-2">
-                      {severity && <SeverityBadge severity={severity} />}
-                      <span className="truncate text-muted">{e.reason.replace(/_/g, " ")}</span>
-                      <MethodBadge method={e.method} />
-                      <span className="truncate font-mono text-muted/80">{e.path}</span>
-                    </div>
-                    <span className="shrink-0 text-muted/70">{timeAgo(e.timestamp)}</span>
-                  </div>
-                );
-              })
-            )}
-          </Card>
-        </div>
-
-        {/* Top risky endpoints */}
-        <div>
-          <h3 className="mb-3 text-sm font-medium text-muted">Top risk endpoints</h3>
-          {posture.data?.top_risky?.length ? (
-            <Table
-              head={
-                <>
-                  <Th>Endpoint</Th>
-                  <Th className="text-right">Risk</Th>
-                  <Th className="hidden text-right sm:table-cell">Requests</Th>
-                </>
-              }
-            >
-              {posture.data.top_risky.slice(0, 6).map((e, i) => (
-                <Row key={e.id} i={i}>
-                  <Td className="font-mono text-xs">
-                    <span className="text-accent">{e.method}</span> {e.path_template}
-                  </Td>
-                  <Td className="text-right">
-                    <Badge tone={e.risk_score >= 70 ? "danger" : e.risk_score >= 40 ? "warn" : "neutral"}>
-                      {e.risk_score}
-                    </Badge>
-                  </Td>
-                  <Td className="hidden text-right tnum sm:table-cell">{fmt(e.request_count)}</Td>
-                </Row>
-              ))}
-            </Table>
+      <div className="mt-4">
+        <h3 className="mb-2 text-[15px] font-semibold">Recent activity</h3>
+        <Card className="divide-y divide-border/60">
+          {!log.data?.length ? (
+            <EmptyState title="No events yet" hint="Blocks and abuse detections will stream in here." />
           ) : (
-            <Card>
-              <EmptyState title="No risk data yet" hint="Populates once the catalog scores discovered endpoints." />
-            </Card>
+            log.data.slice(0, 6).map((e, i) => {
+              const severity = typeof e.extra?.severity === "string" ? e.extra.severity : undefined;
+              return (
+                <div key={i} className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {severity && <SeverityBadge severity={severity} />}
+                    <span className="truncate text-muted">{e.reason.replace(/_/g, " ")}</span>
+                    <MethodBadge method={e.method} />
+                    <span className="truncate font-mono text-muted/80">{e.path}</span>
+                  </div>
+                  <span className="shrink-0 text-muted/70">{timeAgo(e.timestamp)}</span>
+                </div>
+              );
+            })
           )}
-        </div>
+        </Card>
       </div>
     </div>
+  );
+}
+
+function QuickAction({ icon, title, hint, onClick }: { icon: React.ReactNode; title: string; hint?: string; onClick?: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="group flex items-center gap-3 rounded-lg px-2 py-2.5 text-left transition-colors hover:bg-elevated"
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-elevated text-muted">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-medium text-fg">{title}</span>
+        {hint && <span className="block truncate text-[11.5px] text-muted">{hint}</span>}
+      </span>
+      <ArrowRight size={13} className="shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100" />
+    </button>
   );
 }
 
@@ -212,16 +201,16 @@ function BarList({ data, labels }: { data: Record<string, number>; labels: Recor
     return <p className="py-8 text-center text-sm text-muted">No blocks recorded yet.</p>;
   }
   return (
-    <div className="space-y-3">
+    <div className="mt-4 space-y-3">
       {entries.map(([k, v], i) => (
         <div key={k} className="flex items-center gap-3">
-          <span className="w-24 shrink-0 text-xs text-muted">{labels[k] ?? k}</span>
-          <div className="h-2 flex-1 overflow-hidden rounded-full bg-elevated">
+          <span className="w-20 shrink-0 text-xs text-muted">{labels[k] ?? k}</span>
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-elevated">
             <motion.div
               initial={{ width: 0 }}
               animate={{ width: `${(v / max) * 100}%` }}
               transition={{ delay: i * 0.05, type: "spring", stiffness: 120, damping: 20 }}
-              className="h-full rounded-full bg-accent"
+              className="h-full rounded-full bg-fg/70"
             />
           </div>
           <span className="w-10 shrink-0 text-right text-xs tnum text-fg">{fmt(v)}</span>
@@ -231,15 +220,79 @@ function BarList({ data, labels }: { data: Record<string, number>; labels: Recor
   );
 }
 
-function PostureBar({ label, n, total, tone }: { label: string; n: number; total: number; tone: string }) {
-  const w = total > 0 ? (n / total) * 100 : 0;
+/** Real posture split as a donut (protected/partial/unprotected/shadow),
+ * grayscale-graded so severity reads as darkness, not a rainbow — only
+ * "shadow" (the worst state) pops in the danger color. */
+function PostureDonut({ data, onNavigate }: { data?: PostureSummary | null; onNavigate?: (key: string) => void }) {
+  if (!data || data.total === 0) return <div className="flex h-40 items-center justify-center text-xs text-muted">No catalog data yet.</div>;
+  const segs = [
+    { label: "Protected", n: data.protected, cls: "stroke-fg" },
+    { label: "Partial", n: data.partial, cls: "stroke-muted" },
+    { label: "Unprotected", n: data.unprotected, cls: "stroke-muted/50" },
+    { label: "Shadow", n: data.shadow, cls: "stroke-danger" },
+  ];
+  const R = 52;
+  const C = 2 * Math.PI * R;
+  let acc = 0;
   return (
-    <div className="flex items-center gap-3">
-      <span className="w-24 shrink-0 text-xs text-muted">{label}</span>
-      <div className="h-2 flex-1 overflow-hidden rounded-full bg-elevated">
-        <motion.div initial={{ width: 0 }} animate={{ width: `${w}%` }} transition={{ type: "spring", stiffness: 120, damping: 20 }} className={`h-full rounded-full ${tone}`} />
+    <div className="mt-2 flex flex-col items-center">
+      <svg width="140" height="140" viewBox="0 0 140 140" className="-rotate-90">
+        <circle cx="70" cy="70" r={R} className="stroke-border" strokeWidth="14" fill="none" />
+        {segs.map((s) => {
+          const frac = s.n / data.total;
+          const dash = C * frac;
+          const offset = -C * acc;
+          acc += frac;
+          if (frac === 0) return null;
+          return (
+            <motion.circle
+              key={s.label}
+              cx="70"
+              cy="70"
+              r={R}
+              className={s.cls}
+              strokeWidth="14"
+              fill="none"
+              strokeDasharray={`${dash} ${C - dash}`}
+              initial={{ strokeDashoffset: offset, opacity: 0 }}
+              animate={{ strokeDashoffset: offset, opacity: 1 }}
+              transition={{ duration: 0.8, ease: [0.16, 0.8, 0.3, 1] }}
+            />
+          );
+        })}
+      </svg>
+      <div className="mt-3 flex flex-wrap justify-center gap-x-4 gap-y-1.5 text-[11.5px] text-muted">
+        {segs.map((s) => (
+          <button
+            key={s.label}
+            onClick={() => onNavigate?.("catalog")}
+            className="flex items-center gap-1.5 hover:text-fg"
+          >
+            <span className={`h-2 w-2 rounded-sm ${s.cls.replace("stroke-", "bg-")}`} />
+            {s.label} {data.total > 0 ? Math.round((s.n / data.total) * 100) : 0}%
+          </button>
+        ))}
       </div>
-      <span className="w-8 shrink-0 text-right text-xs tnum">{n}</span>
     </div>
+  );
+}
+
+/** Thin single-stroke area chart of a live-accumulated series. No gridlines
+ * with fabricated date labels — there's no historical backend to back them. */
+function LiveChart({ series }: { series: number[] }) {
+  if (series.length < 2) {
+    return <div className="mt-4 flex h-[160px] items-center justify-center text-xs text-muted">Collecting live data…</div>;
+  }
+  const W = 1000, H = 160, PAD = 8;
+  const max = Math.max(1, ...series);
+  const step = (W - PAD * 2) / (series.length - 1);
+  const pts = series.map((v, i) => [PAD + i * step, H - PAD - (v / max) * (H - PAD * 2)] as const);
+  const line = "M" + pts.map((p) => p.join(",")).join(" L");
+  const area = line + ` L${pts[pts.length - 1][0]},${H} L${pts[0][0]},${H} Z`;
+  return (
+    <svg className="mt-4 w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ height: 160 }}>
+      <path d={area} className="fill-fg/[0.06]" />
+      <path d={line} className="stroke-fg" strokeWidth="1.75" fill="none" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
   );
 }

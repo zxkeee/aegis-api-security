@@ -14,7 +14,7 @@ import { Overview } from "@/pages/Overview";
 import { Posture } from "@/pages/Posture";
 import { Settings } from "@/pages/Settings";
 
-const PAGES: Record<string, React.ComponentType<{ session: Session }>> = {
+const PAGES: Record<string, React.ComponentType<{ session: Session; onNavigate?: (key: string) => void }>> = {
   overview: Overview,
   catalog: Catalog,
   posture: Posture,
@@ -93,7 +93,7 @@ export default function App() {
       session={session}
     >
       <div key={`${active}-${refreshKey}`}>
-        <Page session={session} />
+        <Page session={session} onNavigate={setActive} />
       </div>
     </Shell>
   );
