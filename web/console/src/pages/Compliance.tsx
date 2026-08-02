@@ -1,10 +1,10 @@
 import { motion } from "framer-motion";
 import { ShieldCheck } from "@phosphor-icons/react";
-import { SeverityBadge } from "@/components/badges";
-import { ErrorNote, PageHeader } from "@/components/PageBits";
+import { ErrorNote, PageHeader, StatCard } from "@/components/PageBits";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
 import { api, type ComplianceReport } from "@/lib/api";
 import { useData } from "@/lib/hooks";
+import { fmt } from "@/lib/utils";
 
 export function Compliance() {
   const { data, loading, error } = useData<ComplianceReport>(() => api.get("/api/compliance"), []);
@@ -14,83 +14,92 @@ export function Compliance() {
     <div>
       <PageHeader
         title="Compliance"
-        desc="Your API-security findings mapped to NIS2 and ISO 27001 controls — the auditor's language."
-        action={
-          data ? (
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <Pill n={data.summary.critical} tone="danger" label="critical" />
-              <Pill n={data.summary.warning} tone="warn" label="warning" />
-              <span className="text-muted">{data.summary.controls_affected} controls affected</span>
-            </div>
-          ) : null
-        }
+        desc="Findings and runtime abuse mapped to NIS2 and ISO 27001 controls — the auditor's language."
       />
 
       {error ? (
         <ErrorNote error={error} />
-      ) : loading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-28 w-full" />
-          ))}
-        </div>
-      ) : !hasAny ? (
-        <EmptyState
-          icon={<ShieldCheck size={40} />}
-          title="No mapped findings"
-          hint="No exposures or access-control abuse detected to map onto compliance controls. Drive traffic to build the picture."
-        />
       ) : (
-        <div className="space-y-6">
-          {data!.frameworks.map((fw) => (
-            <section key={fw.framework}>
-              <h2 className="mb-2 text-sm font-semibold tracking-tight">{fw.framework}</h2>
-              <div className="space-y-2">
-                {fw.controls.map((c, i) => (
-                  <motion.div
-                    key={c.control}
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: Math.min(i * 0.03, 0.3) }}
-                  >
-                    <Card className="p-4">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <SeverityBadge severity={c.severity} />
-                            <span className="font-mono text-xs text-muted">{c.control}</span>
-                            <span className="truncate text-sm font-medium">{c.title}</span>
-                          </div>
-                          <ul className="mt-2 space-y-1">
-                            {c.issues.map((iss, j) => (
-                              <li key={j} className="truncate text-xs text-muted" title={iss}>
-                                • {iss}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <div className="text-2xl font-semibold tnum">{c.count}</div>
-                          <div className="text-xs text-muted">issues</div>
-                        </div>
-                      </div>
-                    </Card>
-                  </motion.div>
-                ))}
-              </div>
-            </section>
-          ))}
-          <p className="pt-1 text-xs text-muted/70">
-            Mapping aid across OWASP API Top 10, NIS2 (Art. 21(2)) and ISO/IEC 27001:2022 Annex A — not a legal
-            certification.
-          </p>
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <StatCard label="Critical" value={data ? fmt(data.summary.critical) : undefined} tone="danger" loading={loading} />
+          <StatCard label="Warning" value={data ? fmt(data.summary.warning) : undefined} loading={loading} />
+          <StatCard label="Controls affected" value={data ? fmt(data.summary.controls_affected) : undefined} loading={loading} />
+          <StatCard label="Frameworks mapped" value={data ? fmt(data.frameworks.length) : undefined} loading={loading} />
         </div>
       )}
+
+      <div className="mt-4">
+        {loading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 w-full" />
+            ))}
+          </div>
+        ) : !hasAny ? (
+          !error && (
+            <Card>
+              <EmptyState
+                icon={<ShieldCheck size={40} />}
+                title="No mapped findings"
+                hint="No exposures or access-control abuse detected to map onto compliance controls. Drive traffic to build the picture."
+              />
+            </Card>
+          )
+        ) : (
+          <div className="space-y-6">
+            {data!.frameworks.map((fw) => (
+              <section key={fw.framework}>
+                <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-muted">{fw.framework}</h3>
+                <Card className="divide-y divide-border/60">
+                  {fw.controls.map((c, i) => (
+                    <ControlRow key={c.control} c={c} i={i} />
+                  ))}
+                </Card>
+              </section>
+            ))}
+            <p className="text-xs text-muted/70">
+              Mapping aid across OWASP API Top 10, NIS2 (Art. 21(2)) and ISO/IEC 27001:2022 Annex A — not a legal
+              certification.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function Pill({ n, tone, label }: { n: number; tone: "danger" | "warn"; label: string }) {
-  const cls = tone === "danger" ? "text-danger bg-danger/10" : "text-warn bg-warn/10";
-  return <span className={`rounded-full px-2.5 py-1 font-medium ${cls}`}>{n} {label}</span>;
+function ControlRow({ c, i }: { c: ComplianceReport["frameworks"][number]["controls"][number]; i: number }) {
+  const critical = c.severity === "critical";
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: Math.min(i * 0.03, 0.3) }}
+      className="flex items-start gap-4 px-4 py-4 sm:gap-5"
+    >
+      <span className="w-16 shrink-0 pt-0.5 sm:w-20">
+        <span className={`inline-flex items-center gap-1.5 text-[11.5px] font-medium ${critical ? "text-danger" : "text-muted"}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${critical ? "bg-danger" : "bg-muted"}`} />
+          <span className="hidden sm:inline">{critical ? "Critical" : "Warning"}</span>
+        </span>
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="font-mono text-xs text-muted">{c.control}</span>
+          <span className="text-[13.5px] font-medium text-fg">{c.title}</span>
+        </div>
+        <ul className="mt-1.5 space-y-0.5">
+          {c.issues.map((iss, j) => (
+            <li key={j} className="truncate text-xs text-muted" title={iss}>
+              · {iss}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="shrink-0 text-center">
+        <div className="text-[17px] font-bold tnum text-fg">{c.count}</div>
+        <div className="text-[9.5px] uppercase tracking-wide text-muted">issues</div>
+      </div>
+    </motion.div>
+  );
 }

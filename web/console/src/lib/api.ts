@@ -166,7 +166,8 @@ export interface Finding {
   method: string;
   path_template: string;
   risk_score: number;
-  finding: { severity: string; kind: string; detail: string };
+  // Field names match discovery.Finding (Go) exactly — code/owasp/severity/title/why.
+  finding: { code: string; owasp: string; severity: string; title: string; why: string };
 }
 
 export interface BlockEntry {

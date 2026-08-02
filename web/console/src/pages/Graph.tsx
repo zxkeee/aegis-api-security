@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { ShareNetwork } from "@phosphor-icons/react";
-import { ErrorNote, PageHeader } from "@/components/PageBits";
+import { ErrorNote, PageHeader, StatCard } from "@/components/PageBits";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
 import { api, type Graph as GraphData, type GraphNode } from "@/lib/api";
 import { useData } from "@/lib/hooks";
+import { fmt } from "@/lib/utils";
 
 // Layout constants (absolute px; the SVG scrolls inside its card).
 const W = 900;
@@ -13,12 +14,15 @@ const R = 6;
 const CONSUMER_X = 210;
 const ENDPOINT_X = W - 210;
 
+// Grayscale-graded by "how good", not a rainbow of independent colors — only
+// the worst state (unprotected/shadow) pops in the danger color, matching the
+// rest of the console.
 function postureFill(posture?: string): string {
   switch (posture) {
     case "protected":
-      return "fill-accent";
+      return "fill-fg";
     case "partial":
-      return "fill-warn";
+      return "fill-muted";
     default:
       return "fill-danger"; // unprotected / shadow
   }
@@ -27,11 +31,11 @@ function postureFill(posture?: string): string {
 function kindFill(kind?: string): string {
   switch (kind) {
     case "jwt":
-      return "fill-accent";
+      return "fill-fg";
     case "key":
-      return "fill-warn";
+      return "fill-muted";
     default:
-      return "fill-muted"; // ip / anonymous
+      return "fill-muted/50"; // ip / anonymous
   }
 }
 
@@ -71,22 +75,22 @@ export function Graph() {
       <PageHeader
         title="Map"
         desc="Who calls what — consumers to API endpoints, weighted by traffic. Hover a node to trace its calls."
-        action={
-          data ? (
-            <div className="flex items-center gap-3 text-xs">
-              {flaggedCount > 0 ? (
-                <span className="rounded-full bg-danger/10 px-2.5 py-1 font-medium text-danger">
-                  {flaggedCount} under abuse
-                </span>
-              ) : null}
-              <span className="text-muted">
-                {layout?.consumers.length ?? 0} consumers · {layout?.endpoints.length ?? 0} endpoints ·{" "}
-                {data.edges.length} edges
-              </span>
-            </div>
-          ) : null
-        }
       />
+
+      {!error && (
+        <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <StatCard label="Consumers" value={data ? fmt(layout?.consumers.length) : undefined} loading={loading} />
+          <StatCard label="Endpoints" value={data ? fmt(layout?.endpoints.length) : undefined} loading={loading} />
+          <StatCard label="Edges" value={data ? fmt(data.edges.length) : undefined} loading={loading} />
+          <StatCard
+            label="Under abuse"
+            value={data ? fmt(flaggedCount) : undefined}
+            tone={flaggedCount > 0 ? "danger" : "fg"}
+            loading={loading}
+            hint="flagged in recent BOLA/BFLA events"
+          />
+        </div>
+      )}
 
       {error ? (
         <ErrorNote error={error} />
@@ -190,10 +194,10 @@ function AbuseHalo({ x, y }: { x: number; y: number }) {
 
 function Legend() {
   const items: { cls: string; label: string; ring?: boolean; pulse?: boolean }[] = [
-    { cls: "fill-accent", label: "protected / JWT" },
-    { cls: "fill-warn", label: "partial / API-key" },
+    { cls: "fill-fg", label: "protected / JWT" },
+    { cls: "fill-muted", label: "partial / API-key" },
     { cls: "fill-danger", label: "unprotected / shadow" },
-    { cls: "fill-muted", label: "anonymous IP" },
+    { cls: "fill-muted/50", label: "anonymous IP" },
     { cls: "fill-none stroke-danger", label: "exposes PII", ring: true },
     { cls: "fill-none stroke-danger", label: "under abuse (BOLA/BFLA)", ring: true, pulse: true },
   ];
