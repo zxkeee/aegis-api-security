@@ -252,6 +252,15 @@ type OIDCConfig struct {
 	RequireMappedRole bool `yaml:"require_mapped_role"`
 	// AllowedDomains, when non-empty, restricts SSO to these email domains.
 	AllowedDomains []string `yaml:"allowed_domains"`
+	// AllowedTenants, when non-empty, restricts which tenant_claim values SSO
+	// may resolve to. Without it, mapIdentity trusts TenantClaim verbatim: the
+	// first login asserting a given value silently CREATES that tenant, and
+	// every later login asserting the same value joins it. That is safe only
+	// when TenantClaim is an IdP-controlled claim the end user cannot
+	// influence (e.g. a directory/org ID) — for a self-service or
+	// multi-org-per-directory claim, set this allowlist so an unprivileged IdP
+	// user cannot assert membership in an arbitrary existing tenant.
+	AllowedTenants []string `yaml:"allowed_tenants"`
 }
 
 // DiscoveryConfig tunes passive API discovery. The catalog itself is enabled by
@@ -593,6 +602,11 @@ type RegistryConfig struct {
 	DSN          string `yaml:"dsn"`
 	CacheTTLSecs int    `yaml:"cache_ttl_secs"`
 	RotationDays int    `yaml:"rotation_days"`
+	// SignatureFreshnessSecs bounds how old an X-Timestamp on a service-to-
+	// service HMAC signature (ServiceAuth middleware) may be before it's
+	// rejected as stale. Mirrors the freshness window sdk/gatewayverify uses
+	// for the analogous gateway-to-backend identity signature. Default 60s.
+	SignatureFreshnessSecs int `yaml:"signature_freshness_secs"`
 }
 
 type RedisConfig struct {
@@ -658,6 +672,9 @@ func Load(path string) (GatewayConfig, error) {
 	}
 	if cfg.Security.Behavior.AutoBanTTL == 0 {
 		cfg.Security.Behavior.AutoBanTTL = 30 * time.Minute
+	}
+	if cfg.Registry.SignatureFreshnessSecs == 0 {
+		cfg.Registry.SignatureFreshnessSecs = 60
 	}
 	if cfg.Security.Abuse.EnumThreshold == 0 {
 		cfg.Security.Abuse.EnumThreshold = 50

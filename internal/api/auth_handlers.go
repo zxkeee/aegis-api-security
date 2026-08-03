@@ -56,12 +56,18 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"csrf": "", "auth": false})
 		return
 	}
-	// Per-IP brute-force gate. We check the failure counter BEFORE doing any
-	// crypto work, so flooders are turned away cheaply. The counter is only
-	// bumped on an actual failure below — successful operators never spend
-	// budget.
+	// Per-IP brute-force gate. Reserve a slot atomically (IncrRate) BEFORE doing
+	// any credential-checking work, rather than reading the counter and
+	// deciding separately: a read-then-decide split lets concurrent requests
+	// all observe the same under-limit count and all proceed, since none of
+	// them has incremented yet by the time the others check — the increment
+	// below is a single atomic Redis operation, so at most loginBruteforceLimit
+	// concurrent+sequential attempts can ever get past this gate in a window,
+	// no matter how many arrive at once. A successful login refunds its slot
+	// via DecrRate below, preserving "only failures spend budget."
 	ip := middleware.RealIP(r)
-	if n, err := h.store.GetRate(r.Context(), "loginfail:"+ip); err == nil && n >= int64(loginBruteforceLimit) {
+	n, err := h.store.IncrRate(r.Context(), "loginfail:"+ip, loginBruteforceWindow)
+	if err == nil && n > int64(loginBruteforceLimit) {
 		h.store.IncrMetric(r.Context(), "blocked_admin_login_throttled")
 		w.Header().Set("Retry-After", strconv.Itoa(int(loginBruteforceWindow.Seconds())))
 		writeError(w, http.StatusTooManyRequests, "too many failed login attempts; try again later")
@@ -79,7 +85,8 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fail := func(method, tnt string) {
-		_, _ = h.store.IncrRate(r.Context(), "loginfail:"+ip, loginBruteforceWindow)
+		// The slot was already reserved atomically above; a failure just keeps it
+		// spent (nothing to do here beyond the metric/audit/log below).
 		h.store.IncrMetric(r.Context(), "blocked_admin_login_failed")
 		fields := map[string]any{"ip": ip, "method": method}
 		if tnt != "" {
@@ -138,6 +145,10 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "supply either {secret} or {email,password}")
 		return
 	}
+
+	// Credentials checked out: refund the slot reserved above so a successful
+	// login never spends brute-force budget, per the documented contract.
+	h.store.DecrRate(r.Context(), "loginfail:"+ip)
 
 	csrf, err := h.establishSession(r.Context(), w, sess)
 	if err != nil {

@@ -70,11 +70,11 @@ func TestIAM_UserListAndDelete(t *testing.T) {
 		t.Errorf("globex users = %d, want 1", len(globex))
 	}
 
-	ok, err := s.DeleteUser(ctx, "u2")
+	ok, err := s.DeleteUser(ctx, "acme", "u2")
 	if err != nil || !ok {
 		t.Fatalf("DeleteUser u2: ok=%v err=%v", ok, err)
 	}
-	if ok, _ := s.DeleteUser(ctx, "ghost"); ok {
+	if ok, _ := s.DeleteUser(ctx, "acme", "ghost"); ok {
 		t.Error("DeleteUser ghost should report ok=false")
 	}
 	if acme, _ := s.ListUsers(ctx, "acme"); len(acme) != 1 {

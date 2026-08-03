@@ -13,6 +13,7 @@
     "@fontsource/libre-baskerville": "^5.2.10",
     "@phosphor-icons/react": "^2.1.10",
     "framer-motion": "^11.11.7",
+    "postcss": "^8.5.25",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -20,6 +21,6 @@
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^4.3.3",
     "tailwindcss": "^4.0.0",
-    "vite": "^5.4.10"
+    "vite": "^6.4.3"
   }
 }

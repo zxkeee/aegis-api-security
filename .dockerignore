@@ -1,0 +1,57 @@
+# Root Dockerfile's build context is the repo root (`COPY . .`). .gitignore
+# keeps these out of the repo, but that offers no protection at build time —
+# a local .env or uncommitted key sitting in the working tree gets copied
+# into the image layer history regardless of git status unless it's excluded
+# here too.
+
+.git/
+.github/
+
+# Secrets & key material — never bake into an image layer.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+
+# Build artifacts / local state not needed to compile the gateway binary.
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+/bin/
+/load
+*.rdb
+dump.rdb
+gosec_results.json
+
+# Frontend toolchain output — the gateway build only needs the already-
+# committed internal/api/console_dist, never node_modules or a dev cache.
+node_modules/
+web/console/.vite/
+*.tsbuildinfo
+web/v3/node_modules/
+web/v3/dist/
+web/pilot-requests.jsonl
+
+# Editor / OS junk.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Presentation/scratch material that has no business in a build context.
+docs/assets/

@@ -1,3 +1,10 @@
+# Split into two Services on purpose: the gateway (data plane) is meant to be
+# reachable from outside the cluster, but the admin plane (control plane —
+# catalog, findings, IP/JWT/tenant management) must never face the public
+# internet, mirroring the same rule docker-compose.yml enforces by binding
+# 8081 to 127.0.0.1. A single Service defaulting BOTH ports to LoadBalancer
+# silently published the admin API to the internet on `helm install` with
+# stock values — see values.yaml's service.adminType default (ClusterIP).
 apiVersion: v1
 kind: Service
 metadata:
@@ -11,6 +18,22 @@ spec:
       targetPort: gateway
       protocol: TCP
       name: gateway
+  selector:
+    {{- include "aegis.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aegis.fullname" . }}-admin
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+spec:
+  # ClusterIP by default: reach it via port-forward, a VPN-only Ingress, or an
+  # internal LoadBalancer annotation an operator adds deliberately — never by
+  # flipping this to a public LoadBalancer/NodePort without also putting auth
+  # in front of it at the network layer.
+  type: {{ .Values.service.adminType }}
+  ports:
     - port: {{ .Values.service.adminPort }}
       targetPort: admin
       protocol: TCP

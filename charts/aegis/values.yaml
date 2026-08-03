@@ -12,8 +12,15 @@ nameOverride: ""
 fullnameOverride: ""
 
 service:
+  # Gateway (data plane) — fine to publish externally.
   type: LoadBalancer
   gatewayPort: 8080
+  # Admin plane (control plane) — deliberately a separate Service, defaulted
+  # to ClusterIP. It must never face the public internet (same rule
+  # docker-compose.yml enforces by binding 8081 to 127.0.0.1); expose it via
+  # port-forward, a VPN-restricted Ingress, or an internal-only LoadBalancer
+  # annotation, not by changing this to LoadBalancer/NodePort directly.
+  adminType: ClusterIP
   adminPort: 8081
 
 ingress:

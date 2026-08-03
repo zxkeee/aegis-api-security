@@ -56,7 +56,7 @@ func TestStore_IPBlocklist(t *testing.T) {
 	if ips, _ := st.GetBlockedIPs(ctx); len(ips) != 1 || ips[0] != "1.2.3.4" {
 		t.Errorf("GetBlockedIPs = %v", ips)
 	}
-	if err := st.UnblockIP(ctx, "1.2.3.4"); err != nil {
+	if err := st.UnblockIP(ctx, "1.2.3.4", ""); err != nil {
 		t.Fatalf("UnblockIP: %v", err)
 	}
 	if blocked, _ := st.IsIPBlocked(ctx, "1.2.3.4"); blocked {

@@ -128,6 +128,12 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] Per-IP brute-force rate limit on `/api/login`: 8 failures / 5 min →
       `429 Retry-After`. Counter only consumes budget on failure (successful
       operators never throttle). Validated live: 8× 401 → 9th request 429.
+- [ ] Migrate `github.com/lib/pq` → `github.com/jackc/pgx/v5`. `lib/pq` has
+      been in maintenance-only mode for years (security fixes only; its own
+      README recommends `pgx` for new projects). Not urgent — no known CVE,
+      `govulncheck` stays clean — but a shrinking bus factor for the component
+      talking to the catalog/forensic/iam PostgreSQL database. Do opportunistically,
+      not as a release blocker.
 
 ---
 

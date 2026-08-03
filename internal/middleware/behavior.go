@@ -13,8 +13,16 @@ import (
 //  2. If score >= threshold the request is blocked immediately.
 //  3. After the request, metrics are recorded so the next request sees updated data.
 //
-// This means an IP that has built up a high score is blocked on the CURRENT request,
-// not only on the next one (which was the previous reactive behaviour).
+// This means a SEQUENTIAL request from an IP that has built up a high score is
+// blocked on that same request, not only on the next one (which was the
+// previous, purely reactive behaviour). It is not a hard per-IP concurrency
+// bound, though: step 3 only runs after the response completes, so a burst of
+// CONCURRENT requests from the same IP can all read the same pre-burst score
+// in step 1 and all pass before any of them has recorded outcomes for the
+// others to see — a race window bounded by upstream latency × concurrency,
+// not by this scoring logic. Volumetric bursts are RateLimit's job (a real
+// atomic counter, see ratelimit.go); this middleware's guarantee is about
+// score-driven blocking once elevated, not about capping in-flight bursts.
 func BehaviorAnalysis(cfg config.BehaviorConfig, log Logger, st behaviorStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough

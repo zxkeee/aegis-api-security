@@ -37,6 +37,9 @@ func (h *handlers) specReady(w http.ResponseWriter) bool {
 // parsed and validated before storage; a malformed document is rejected with
 // 400 and never replaces the current spec. Scoped to the request's tenant.
 func (h *handlers) putSpec(w http.ResponseWriter, r *http.Request) {
+	if !h.requireMutator(w, r) {
+		return
+	}
 	if !h.specReady(w) {
 		return
 	}
@@ -79,6 +82,9 @@ func (h *handlers) getSpec(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/discovery/spec — removes the tenant's uploaded spec.
 func (h *handlers) deleteSpec(w http.ResponseWriter, r *http.Request) {
+	if !h.requireMutator(w, r) {
+		return
+	}
 	if !h.specReady(w) {
 		return
 	}

@@ -1,0 +1,34 @@
+# Dockerfile.v3's build context is this directory (`docker build -f
+# Dockerfile.v3 .` run from web/). It only needs v3/ (built by the node stage)
+# and go.mod + server.go (built by the go stage) — never console/, git
+# metadata, or local secrets/state.
+
+.git/
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+
+# The admin console lives in this same directory tree but is a completely
+# separate app (embedded into the gateway binary, not this image) — no
+# reason for its source or node_modules to enter this build context.
+console/
+
+v3/node_modules/
+v3/dist/
+node_modules/
+
+# Captured lead data (PII) — must never end up in an image layer.
+pilot-requests.jsonl
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.log
+*.tmp
+*.bak

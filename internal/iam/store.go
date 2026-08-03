@@ -299,10 +299,25 @@ func (s *Store) ListUsers(ctx context.Context, tenantID string) ([]User, error) 
 	return out, rows.Err()
 }
 
-// DeleteUser removes a single user. Returns (false, nil) when not found
-// (idempotent) so a UI can issue the call safely.
-func (s *Store) DeleteUser(ctx context.Context, id string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM admin_users WHERE id = $1`, id)
+// DeleteUser removes a single user, scoped to tenantID. Returns (false, nil)
+// when not found (idempotent) so a UI can issue the call safely.
+//
+// tenantID is normally required and enforced IN THE QUERY — the caller's
+// handler (deleteUser in internal/api/tenant_handlers.go) also does a
+// manual list-then-check before calling this, but that check living only at
+// the handler layer was a single point of failure for cross-tenant deletion:
+// any future caller of this method (a bulk-admin endpoint, a CLI tool, a
+// migration script) that skipped the same dance would silently allow it.
+// Pass "" ONLY for an already-authorized super-admin caller that intends to
+// delete across all tenants.
+func (s *Store) DeleteUser(ctx context.Context, tenantID, id string) (bool, error) {
+	var res sql.Result
+	var err error
+	if tenantID == "" {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM admin_users WHERE id = $1`, id)
+	} else {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM admin_users WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	}
 	if err != nil {
 		return false, err
 	}

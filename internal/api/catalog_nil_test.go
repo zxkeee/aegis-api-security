@@ -62,15 +62,15 @@ func TestCatalog_NilDegradesTo503(t *testing.T) {
 func TestSpecMutations_NilDegradeTo503(t *testing.T) {
 	h, _ := redisHandlers(t) // catalog == nil
 
-	put := httptest.NewRequest(http.MethodPut, "/api/discovery/spec",
-		strings.NewReader("openapi: 3.0.0"))
+	put := asAdmin(httptest.NewRequest(http.MethodPut, "/api/discovery/spec",
+		strings.NewReader("openapi: 3.0.0")))
 	recPut := httptest.NewRecorder()
 	h.putSpec(recPut, put)
 	if recPut.Code != http.StatusServiceUnavailable {
 		t.Fatalf("putSpec = %d, want 503", recPut.Code)
 	}
 
-	del := httptest.NewRequest(http.MethodDelete, "/api/discovery/spec", nil)
+	del := asAdmin(httptest.NewRequest(http.MethodDelete, "/api/discovery/spec", nil))
 	recDel := httptest.NewRecorder()
 	h.deleteSpec(recDel, del)
 	if recDel.Code != http.StatusServiceUnavailable {

@@ -69,6 +69,59 @@ func TestIAM_CreateAndVerify(t *testing.T) {
 	}
 }
 
+// TestIAM_DeleteUser_TenantScoped guards VULN M2: DeleteUser must refuse to
+// remove a user outside the given tenant scope IN THE QUERY, not only via a
+// caller's separate manual check — a defense-in-depth boundary for any future
+// caller that doesn't replicate the handler-layer dance.
+func TestIAM_DeleteUser_TenantScoped(t *testing.T) {
+	s := freshIAM(t)
+	ctx := context.Background()
+	if err := s.CreateTenant(ctx, "acme", "ACME"); err != nil {
+		t.Fatalf("CreateTenant acme: %v", err)
+	}
+	if err := s.CreateTenant(ctx, "globex", "GLOBEX"); err != nil {
+		t.Fatalf("CreateTenant globex: %v", err)
+	}
+	u := User{ID: "victim", TenantID: "globex", Email: "op@globex.io", Role: RoleAdmin}
+	if err := s.CreateUser(ctx, u, "correct-horse"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Scoped to the WRONG tenant: must not delete, even though the id exists.
+	deleted, err := s.DeleteUser(ctx, "acme", "victim")
+	if err != nil {
+		t.Fatalf("DeleteUser (wrong tenant): %v", err)
+	}
+	if deleted {
+		t.Fatal("DeleteUser deleted a user outside its tenant scope — cross-tenant deletion")
+	}
+	if _, err := s.VerifyPassword(ctx, "globex", "op@globex.io", "correct-horse"); err != nil {
+		t.Fatalf("user should still exist after out-of-scope delete attempt: %v", err)
+	}
+
+	// Scoped to the RIGHT tenant: deletes as expected.
+	deleted, err = s.DeleteUser(ctx, "globex", "victim")
+	if err != nil {
+		t.Fatalf("DeleteUser (right tenant): %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteUser should have deleted the user in its own tenant")
+	}
+
+	// "" (no scope) is the super-admin escape hatch — deletes regardless of tenant.
+	u2 := User{ID: "victim2", TenantID: "globex", Email: "op2@globex.io", Role: RoleAdmin}
+	if err := s.CreateUser(ctx, u2, "correct-horse"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	deleted, err = s.DeleteUser(ctx, "", "victim2")
+	if err != nil {
+		t.Fatalf("DeleteUser (super-admin, no scope): %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteUser with no tenant filter should delete across tenants")
+	}
+}
+
 func TestIAM_BootstrapRootIdempotent(t *testing.T) {
 	s := freshIAM(t)
 	ctx := context.Background()

@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -178,7 +179,14 @@ func (a *Authenticator) mapIdentity(claims map[string]any) (Identity, error) {
 	tenantID := tenant.Default
 	if a.cfg.TenantClaim != "" {
 		if v, ok := claims[a.cfg.TenantClaim].(string); ok && strings.TrimSpace(v) != "" {
-			tenantID = strings.TrimSpace(v)
+			claimed := strings.TrimSpace(v)
+			// With an allowlist configured, a claim value outside it is
+			// refused rather than silently auto-provisioning (or joining) an
+			// arbitrary tenant — see AllowedTenants' doc comment.
+			if len(a.cfg.AllowedTenants) > 0 && !slices.Contains(a.cfg.AllowedTenants, claimed) {
+				return Identity{}, fmt.Errorf("oidc: tenant_claim %q for %q is not in allowed_tenants", claimed, email)
+			}
+			tenantID = claimed
 		}
 	}
 

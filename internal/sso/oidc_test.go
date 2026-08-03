@@ -84,6 +84,32 @@ func TestMapIdentity_TenantClaim(t *testing.T) {
 	}
 }
 
+// TestMapIdentity_AllowedTenants guards VULN M1: without an allowlist, any
+// value asserted in TenantClaim is trusted verbatim (auto-provisioning
+// whatever tenant it names); with one set, a claim value outside it must be
+// refused rather than silently landing the user in — or creating — an
+// arbitrary tenant.
+func TestMapIdentity_AllowedTenants(t *testing.T) {
+	a := auth(config.OIDCConfig{
+		RolesClaim: "groups", TenantClaim: "org", AdminRoles: []string{"admins"},
+		AllowedTenants: []string{"acme", "globex"},
+	})
+	if _, err := a.mapIdentity(map[string]any{
+		"email": "u@example.com", "org": "not-a-real-tenant", "groups": []any{"admins"},
+	}); err == nil {
+		t.Fatal("tenant_claim value outside allowed_tenants must be rejected")
+	}
+	id, err := a.mapIdentity(map[string]any{
+		"email": "u@example.com", "org": "acme", "groups": []any{"admins"},
+	})
+	if err != nil {
+		t.Fatalf("allowed tenant rejected: %v", err)
+	}
+	if id.TenantID != "acme" {
+		t.Fatalf("tenant claim not honoured: %q", id.TenantID)
+	}
+}
+
 func TestMapIdentity_AllowedDomains(t *testing.T) {
 	a := auth(config.OIDCConfig{AllowedDomains: []string{"example.com"}})
 	if _, err := a.mapIdentity(map[string]any{"email": "u@evil.com"}); err == nil {

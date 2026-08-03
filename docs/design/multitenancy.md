@@ -197,6 +197,23 @@ every method signature. `GetMetrics` switches its `KEYS gw:metrics:*` scan to
 - *Host/route disagreement* → reject, never coerce.
 - *Index regressions from tenant-leading keys* → re-run `tests/load/` after the
   change and confirm plans use the new composite indexes.
+- *Shared-backend traffic isn't security-isolated between the tenants that
+  share it* → all per-IP security state (rate limits, behaviour score,
+  auto-ban, JA3 sets, BOLA counters) is Redis-key-scoped by tenant
+  (`gw:t:<tenant>:...`), not by upstream. If an operator configures two tenant
+  Host aliases that route to the *same* backend (e.g. staging aliases, or a
+  brand reused across two tenant configs), an attacker can "hop" between the
+  Host header values to get a fresh rate-limit/behaviour/IP-ban bucket per
+  Host for what is, on the wire, identical target infrastructure — multiplying
+  their effective budget and evading a ban that only applies under one of the
+  Host names. This is inherent to per-tenant isolation being keyed on the
+  resolved tenant rather than the physical backend, and it takes a deliberate
+  shared-backend configuration to trigger — it is not exploitable against a
+  deployment where each tenant genuinely owns its own upstream. **Operators
+  configuring two tenants against the same backend must treat that pair as
+  security-unisolated for rate/IP/behaviour purposes** (or accept the shared
+  budget as intentional); this is not something `config.Validate` can catch,
+  since sharing a backend is sometimes a deliberate, legitimate setup.
 
 ## Implementation plan (sequenced)
 

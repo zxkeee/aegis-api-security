@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -180,15 +181,25 @@ func (s *Store) IncrRate(ctx context.Context, key string, window time.Duration) 
 }
 
 // GetRate reads the current counter for a rate-limited key without bumping it.
-// Returns 0 when the key has expired. Used by handlers that want to check the
-// budget BEFORE consuming it (e.g. the login brute-force gate, which only
-// charges the counter on failed attempts).
+// Returns 0 when the key has expired.
 func (s *Store) GetRate(ctx context.Context, key string) (int64, error) {
 	v, err := s.client.Get(ctx, tkey(ctx, keyRatePrefix+key)).Int64()
 	if err == redis.Nil {
 		return 0, nil
 	}
 	return v, err
+}
+
+// DecrRate gives back one unit of budget on a rate-limited key. Used by the
+// login brute-force gate: IncrRate reserves a slot atomically BEFORE the
+// expensive credential check runs (closing the check-then-act race a plain
+// GetRate-then-IncrRate split had), and a successful login refunds that slot
+// so the documented "only failures spend budget" behaviour still holds. A
+// harmless best-effort op — if it races with an expiring key or drifts the
+// counter slightly negative, the next GetRate/IncrRate simply sees more
+// headroom, never less.
+func (s *Store) DecrRate(ctx context.Context, key string) {
+	s.client.Decr(ctx, tkey(ctx, keyRatePrefix+key)) //nolint:errcheck
 }
 
 // ── IP Blocking ───────────────────────────────────────────────────────────────
@@ -235,32 +246,65 @@ func (s *Store) AutoBanIP(ctx context.Context, ip string, ttl time.Duration) err
 	return s.client.Set(ctx, tkey(ctx, autoBanPrefix+ip), "1", ttl).Err()
 }
 
-// UnblockIP removes an IP from both the permanent block list and any live
-// auto-ban, so a single admin action lifts a block regardless of its source.
-func (s *Store) UnblockIP(ctx context.Context, ip string) error {
+// UnblockIP removes an IP from the given source ("manual", "auto", or ""/"both"
+// for either). Exposed as a selective op (rather than always clearing
+// everything) because an IP can be blocked by BOTH an admin AND a live
+// auto-ban at once — an operator investigating an auto-ban and clicking
+// "unblock to test" must be able to lift just that, without silently
+// discarding a deliberate permanent block they placed earlier.
+func (s *Store) UnblockIP(ctx context.Context, ip, source string) error {
 	pipe := s.client.Pipeline()
-	pipe.SRem(ctx, tkey(ctx, keyBlockedIPs), ip)
-	pipe.Del(ctx, tkey(ctx, autoBanPrefix+ip))
+	if source == "" || source == "manual" || source == "both" {
+		pipe.SRem(ctx, tkey(ctx, keyBlockedIPs), ip)
+	}
+	if source == "" || source == "auto" || source == "both" {
+		pipe.Del(ctx, tkey(ctx, autoBanPrefix+ip))
+	}
 	_, err := pipe.Exec(ctx)
 	return err
 }
 
-// GetBlockedIPs returns every currently-blocked IP: the permanent admin list
-// plus any IP still under a live behaviour auto-ban.
+// BlockedIPInfo describes one blocked IP with enough detail for an operator
+// to tell a deliberate admin block from a still-live, self-expiring
+// behaviour auto-ban before deciding whether/how to lift it.
+type BlockedIPInfo struct {
+	IP string `json:"ip"`
+	// Source is "manual" (admin-initiated, permanent), "auto" (behaviour
+	// auto-ban, self-expires), or "manual+auto" when both apply at once.
+	Source string `json:"source"`
+	// TTLSeconds is set only when an auto-ban is live (Source contains "auto")
+	// — how long until it self-expires.
+	TTLSeconds int64 `json:"ttl_seconds,omitempty"`
+}
+
+// GetBlockedIPs returns every currently-blocked IP as plain strings (the
+// permanent admin list plus any IP still under a live auto-ban), for callers
+// that only need membership, not source/TTL detail.
 func (s *Store) GetBlockedIPs(ctx context.Context) ([]string, error) {
-	permanent, err := s.client.SMembers(ctx, tkey(ctx, keyBlockedIPs)).Result()
+	details, err := s.GetBlockedIPDetails(ctx)
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[string]bool, len(permanent))
-	out := make([]string, 0, len(permanent))
-	for _, ip := range permanent {
-		if !seen[ip] {
-			seen[ip] = true
-			out = append(out, ip)
-		}
+	out := make([]string, len(details))
+	for i, d := range details {
+		out[i] = d.IP
+	}
+	return out, nil
+}
+
+// GetBlockedIPDetails returns every currently-blocked IP with its source and
+// (for auto-bans) remaining TTL — see BlockedIPInfo.
+func (s *Store) GetBlockedIPDetails(ctx context.Context) ([]BlockedIPInfo, error) {
+	manualList, err := s.client.SMembers(ctx, tkey(ctx, keyBlockedIPs)).Result()
+	if err != nil {
+		return nil, err
+	}
+	manual := make(map[string]bool, len(manualList))
+	for _, ip := range manualList {
+		manual[ip] = true
 	}
 
+	autoTTL := make(map[string]int64)
 	prefix := tkey(ctx, autoBanPrefix)
 	var cursor uint64
 	for {
@@ -270,16 +314,34 @@ func (s *Store) GetBlockedIPs(ctx context.Context) ([]string, error) {
 		}
 		for _, k := range keys {
 			ip := strings.TrimPrefix(k, prefix)
-			if !seen[ip] {
-				seen[ip] = true
-				out = append(out, ip)
+			ttl, err := s.client.TTL(ctx, k).Result()
+			if err != nil {
+				continue
 			}
+			autoTTL[ip] = int64(ttl.Seconds())
 		}
 		cursor = next
 		if cursor == 0 {
 			break
 		}
 	}
+
+	out := make([]BlockedIPInfo, 0, len(manual)+len(autoTTL))
+	for ip := range manual {
+		info := BlockedIPInfo{IP: ip, Source: "manual"}
+		if ttl, ok := autoTTL[ip]; ok {
+			info.Source = "manual+auto"
+			info.TTLSeconds = ttl
+		}
+		out = append(out, info)
+	}
+	for ip, ttl := range autoTTL {
+		if manual[ip] {
+			continue // already emitted above as "manual+auto"
+		}
+		out = append(out, BlockedIPInfo{IP: ip, Source: "auto", TTLSeconds: ttl})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].IP < out[j].IP })
 	return out, nil
 }
 

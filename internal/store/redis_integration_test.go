@@ -65,7 +65,7 @@ func TestRedis_AutoBanExpiresAndIsUnblockable(t *testing.T) {
 
 	// An admin can lift an auto-ban early via the same UnblockIP path used for
 	// permanent blocks — the false-positive escape hatch.
-	if err := s.UnblockIP(ctx, "9.9.9.9"); err != nil {
+	if err := s.UnblockIP(ctx, "9.9.9.9", ""); err != nil {
 		t.Fatalf("UnblockIP: %v", err)
 	}
 	if ok, _ := s.IsIPBlocked(ctx, "9.9.9.9"); ok {
@@ -79,6 +79,47 @@ func TestRedis_AutoBanExpiresAndIsUnblockable(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if ok, _ := s.IsIPBlocked(ctx, "8.8.8.8"); ok {
 		t.Fatal("auto-ban should have expired on its own")
+	}
+}
+
+// TestRedis_BlockedIPDetails_DualSourceSelectiveUnblock guards VULN M7: an IP
+// that is BOTH manually blocked AND under a live auto-ban must be reported as
+// such (so an operator can tell), and unblocking just the "auto" source must
+// leave the deliberate manual block in place — not silently lift it.
+func TestRedis_BlockedIPDetails_DualSourceSelectiveUnblock(t *testing.T) {
+	s := testStore(t)
+	ctx := ctxFor("acme")
+
+	if err := s.BlockIP(ctx, "1.1.1.1"); err != nil {
+		t.Fatalf("BlockIP: %v", err)
+	}
+	if err := s.AutoBanIP(ctx, "1.1.1.1", time.Minute); err != nil {
+		t.Fatalf("AutoBanIP: %v", err)
+	}
+	details, err := s.GetBlockedIPDetails(ctx)
+	if err != nil {
+		t.Fatalf("GetBlockedIPDetails: %v", err)
+	}
+	if len(details) != 1 || details[0].IP != "1.1.1.1" {
+		t.Fatalf("expected one entry for 1.1.1.1, got %v", details)
+	}
+	if details[0].Source != "manual+auto" {
+		t.Fatalf("Source = %q, want %q", details[0].Source, "manual+auto")
+	}
+	if details[0].TTLSeconds <= 0 {
+		t.Fatalf("TTLSeconds = %d, want > 0 for a live auto-ban", details[0].TTLSeconds)
+	}
+
+	// Unblock only the auto portion — the manual block must survive.
+	if err := s.UnblockIP(ctx, "1.1.1.1", "auto"); err != nil {
+		t.Fatalf("UnblockIP(auto): %v", err)
+	}
+	if ok, _ := s.IsIPBlocked(ctx, "1.1.1.1"); !ok {
+		t.Fatal("IP should still be blocked — the manual block was not touched")
+	}
+	details, _ = s.GetBlockedIPDetails(ctx)
+	if len(details) != 1 || details[0].Source != "manual" {
+		t.Fatalf("expected only the manual block to remain, got %v", details)
 	}
 }
 

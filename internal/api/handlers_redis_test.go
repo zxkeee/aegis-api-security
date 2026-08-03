@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -136,6 +137,49 @@ func TestGetRoutes_OK(t *testing.T) {
 	h.getRoutes(rec, r)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("routes = %d", rec.Code)
+	}
+}
+
+// TestGetRoutes_TenantScoped guards VULN H1: a non-super-admin session must
+// only see its own tenant's routes (plus tenant-agnostic global ones), never
+// another tenant's upstream/security config. Only a super-admin sees all.
+func TestGetRoutes_TenantScoped(t *testing.T) {
+	h, _ := redisHandlers(t)
+	h.cfg.Routes = []config.RouteConfig{
+		{Path: "/acme/", TenantID: "acme", Upstreams: []string{"http://acme-internal"}},
+		{Path: "/globex/", TenantID: "globex", Upstreams: []string{"http://globex-internal"}},
+		{Path: "/shared/", Upstreams: []string{"http://shared"}}, // TenantID == "" (single-tenant style)
+	}
+
+	// A viewer in "acme" must not see globex's route.
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/routes", nil).WithContext(ctxAs("acme", iam.RoleViewer, false))
+	h.getRoutes(rec, r)
+	var got []config.RouteConfig
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	paths := map[string]bool{}
+	for _, rt := range got {
+		paths[rt.Path] = true
+	}
+	if !paths["/acme/"] || !paths["/shared/"] {
+		t.Fatalf("acme session should see its own + shared routes, got %v", paths)
+	}
+	if paths["/globex/"] {
+		t.Fatal("acme session must NOT see globex's route (cross-tenant leak)")
+	}
+
+	// A super-admin sees everything.
+	rec = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "/api/routes", nil).WithContext(ctxAs("acme", iam.RoleAdmin, true))
+	h.getRoutes(rec, r)
+	got = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("super-admin should see all 3 routes, got %d", len(got))
 	}
 }
 

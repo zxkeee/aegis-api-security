@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"api-gateway/internal/config"
 )
@@ -15,6 +17,7 @@ func ServiceAuth(cfg config.RegistryConfig, log Logger, st DenySink, reg Registr
 	if !cfg.Enabled {
 		return passthrough
 	}
+	freshness := time.Duration(cfg.SignatureFreshnessSecs) * time.Second
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -23,6 +26,24 @@ func ServiceAuth(cfg config.RegistryConfig, log Logger, st DenySink, reg Registr
 
 			if serviceID == "" || signature == "" {
 				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Freshness — reject a stale/replayed timestamp before doing any
+			// crypto or registry lookup, mirroring sdk/gatewayverify's Verify
+			// (the analogous gateway->backend identity signature). Without
+			// this a captured (X-Service-ID, X-Service-Signature, X-Timestamp)
+			// triple would be valid to replay indefinitely.
+			ts := r.Header.Get("X-Timestamp")
+			secs, err := strconv.ParseInt(ts, 10, 64)
+			if err != nil {
+				SecurityDeny(w, r, log, st, "service_bad_timestamp", RealIP(r), http.StatusForbidden,
+					map[string]any{"service_id": serviceID})
+				return
+			}
+			if skew := time.Since(time.Unix(secs, 0)); skew > freshness || skew < -freshness {
+				SecurityDeny(w, r, log, st, "service_stale_signature", RealIP(r), http.StatusForbidden,
+					map[string]any{"service_id": serviceID})
 				return
 			}
 
@@ -43,7 +64,7 @@ func ServiceAuth(cfg config.RegistryConfig, log Logger, st DenySink, reg Registr
 			payload := strings.Join([]string{
 				r.Method,
 				r.URL.Path,
-				r.Header.Get("X-Timestamp"),
+				ts,
 			}, "\n")
 
 			mac := hmac.New(sha256.New, []byte(secret))

@@ -283,7 +283,14 @@ func (h *handlers) deleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	deleted, err := h.users.DeleteUser(r.Context(), id)
+	// Pass "" (no tenant filter) only when the manual check above already
+	// authorized cross-tenant deletion (super-admin); otherwise the query
+	// itself enforces the boundary, not just this handler's list-then-check.
+	deleteScope := scope
+	if allTenants {
+		deleteScope = ""
+	}
+	deleted, err := h.users.DeleteUser(r.Context(), deleteScope, id)
 	if err != nil {
 		h.log.Error("admin: delete user failed", map[string]any{"error": err.Error()})
 		writeError(w, http.StatusInternalServerError, "could not delete user")

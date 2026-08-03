@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 )
 
@@ -63,8 +64,8 @@ func TestPutSpec_Success(t *testing.T) {
 	fake := &fakeSpecOps{meta: discovery.SpecInfo{Version: "openapi:3", OpCount: 7}}
 	h := specHandlers(t, fake)
 
-	r := httptest.NewRequest(http.MethodPut, "/api/discovery/spec",
-		strings.NewReader("openapi: 3.0.0\npaths: {/x: {get: {}}}"))
+	r := asAdmin(httptest.NewRequest(http.MethodPut, "/api/discovery/spec",
+		strings.NewReader("openapi: 3.0.0\npaths: {/x: {get: {}}}")))
 	rec := httptest.NewRecorder()
 	h.putSpec(rec, r)
 
@@ -84,7 +85,7 @@ func TestPutSpec_InvalidSpec(t *testing.T) {
 	fake := &fakeSpecOps{setErr: errors.New("spec: empty document")}
 	h := specHandlers(t, fake)
 
-	r := httptest.NewRequest(http.MethodPut, "/api/discovery/spec", strings.NewReader("garbage"))
+	r := asAdmin(httptest.NewRequest(http.MethodPut, "/api/discovery/spec", strings.NewReader("garbage")))
 	rec := httptest.NewRecorder()
 	h.putSpec(rec, r)
 
@@ -121,7 +122,7 @@ func TestDeleteSpec(t *testing.T) {
 	// Deleted.
 	h := specHandlers(t, &fakeSpecOps{delOK: true})
 	rec := httptest.NewRecorder()
-	h.deleteSpec(rec, httptest.NewRequest(http.MethodDelete, "/api/discovery/spec", nil))
+	h.deleteSpec(rec, asAdmin(httptest.NewRequest(http.MethodDelete, "/api/discovery/spec", nil)))
 	if rec.Code != http.StatusOK || decode(t, rec)["deleted"] != true {
 		t.Fatalf("delete: status=%d body=%v", rec.Code, decode(t, rec))
 	}
@@ -129,9 +130,34 @@ func TestDeleteSpec(t *testing.T) {
 	// Nothing to delete.
 	h = specHandlers(t, &fakeSpecOps{delOK: false})
 	rec = httptest.NewRecorder()
-	h.deleteSpec(rec, httptest.NewRequest(http.MethodDelete, "/api/discovery/spec", nil))
+	h.deleteSpec(rec, asAdmin(httptest.NewRequest(http.MethodDelete, "/api/discovery/spec", nil)))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("delete-missing: status = %d, want 404", rec.Code)
+	}
+}
+
+// TestPutSpec_ViewerForbidden / TestDeleteSpec_ViewerForbidden guard VULN L5:
+// putSpec/deleteSpec must reject a viewer-role session, matching every other
+// mutating admin handler's defense-in-depth requireMutator check.
+func TestPutSpec_ViewerForbidden(t *testing.T) {
+	h := specHandlers(t, &fakeSpecOps{})
+	r := httptest.NewRequest(http.MethodPut, "/api/discovery/spec", strings.NewReader("openapi: 3.0.0"))
+	r = r.WithContext(iam.WithRole(r.Context(), iam.RoleViewer))
+	rec := httptest.NewRecorder()
+	h.putSpec(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer putSpec: status = %d, want 403", rec.Code)
+	}
+}
+
+func TestDeleteSpec_ViewerForbidden(t *testing.T) {
+	h := specHandlers(t, &fakeSpecOps{delOK: true})
+	r := httptest.NewRequest(http.MethodDelete, "/api/discovery/spec", nil)
+	r = r.WithContext(iam.WithRole(r.Context(), iam.RoleViewer))
+	rec := httptest.NewRecorder()
+	h.deleteSpec(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer deleteSpec: status = %d, want 403", rec.Code)
 	}
 }
 

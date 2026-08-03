@@ -22,6 +22,7 @@ import (
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/store"
+	"api-gateway/internal/tenant"
 )
 
 type handlers struct {
@@ -222,8 +223,27 @@ func (h *handlers) getConfig(w http.ResponseWriter, r *http.Request) {
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+// getRoutes returns the caller's own route configuration. Unlike a single
+// global route list, this is scoped by tenant — h.cfg.Routes spans every
+// tenant on the deployment, and a route's Upstreams/WAF/DLP/RateLimit
+// overrides are exactly the kind of internal topology a tenant B operator
+// must not learn about tenant A. Only a super-admin sees the unfiltered list,
+// mirroring listTenants/listUsers.
 func (h *handlers) getRoutes(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.cfg.Routes)
+	if iam.IsSuperAdmin(r.Context()) {
+		writeJSON(w, http.StatusOK, h.cfg.Routes)
+		return
+	}
+	self := tenant.From(r.Context())
+	owned := make([]config.RouteConfig, 0, len(h.cfg.Routes))
+	for _, rt := range h.cfg.Routes {
+		// Single-tenant deployments leave TenantID empty on every route; treat
+		// that as "belongs to every tenant" rather than hiding it from everyone.
+		if rt.TenantID == "" || rt.TenantID == self {
+			owned = append(owned, rt)
+		}
+	}
+	writeJSON(w, http.StatusOK, owned)
 }
 
 // ── Block Log (Forensics) ─────────────────────────────────────────────────────
@@ -254,7 +274,10 @@ func (h *handlers) getInventory(w http.ResponseWriter, r *http.Request) {
 // ── IP Management ─────────────────────────────────────────────────────────────
 
 func (h *handlers) getBlockedIPs(w http.ResponseWriter, r *http.Request) {
-	ips, err := h.store.GetBlockedIPs(r.Context())
+	// Structured (source + TTL) so an operator can tell a deliberate admin
+	// block from a still-live, self-expiring auto-ban before unblocking —
+	// see store.BlockedIPInfo and unblockIPHandler's ?source= param.
+	ips, err := h.store.GetBlockedIPDetails(r.Context())
 	if err != nil {
 		h.writeStoreError(w, "admin: blocked IPs fetch failed", "failed to fetch blocked IPs", err)
 		return
@@ -300,8 +323,19 @@ func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "valid IP address is required")
 		return
 	}
+	// Optional ?source=manual|auto to lift just one kind of block, leaving the
+	// other in place — e.g. clearing a live auto-ban without discarding a
+	// deliberate admin block on the same IP. Omitted/"both" clears everything,
+	// matching the previous (source-blind) behaviour.
+	source := r.URL.Query().Get("source")
+	switch source {
+	case "", "manual", "auto", "both":
+	default:
+		writeError(w, http.StatusBadRequest, `source must be "manual", "auto", or omitted`)
+		return
+	}
 
-	if err := h.store.UnblockIP(r.Context(), ip); err != nil {
+	if err := h.store.UnblockIP(r.Context(), ip, source); err != nil {
 		h.log.Error("admin: unblock IP failed", map[string]any{"error": err.Error()})
 		writeError(w, http.StatusInternalServerError, "failed to unblock IP")
 		return
