@@ -31,6 +31,26 @@ func TestValidate_RejectsEmptyAdminSecret(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsShortAutoBanTTL(t *testing.T) {
+	c := validBase()
+	c.Security.Behavior.Enabled = true
+	c.Security.Behavior.WindowSeconds = 60
+	c.Security.Behavior.AutoBanTTL = 15 * time.Second
+	if err := Validate(c); err == nil {
+		t.Fatal("auto_ban_ttl shorter than window_seconds must be rejected (the ban would never actually expire under sustained traffic)")
+	}
+}
+
+func TestValidate_AcceptsAutoBanTTLAtLeastWindow(t *testing.T) {
+	c := validBase()
+	c.Security.Behavior.Enabled = true
+	c.Security.Behavior.WindowSeconds = 60
+	c.Security.Behavior.AutoBanTTL = 30 * time.Minute
+	if err := Validate(c); err != nil {
+		t.Fatalf("auto_ban_ttl >= window_seconds should be accepted: %v", err)
+	}
+}
+
 func TestValidate_RejectsPlaceholderSecret(t *testing.T) {
 	c := validBase()
 	c.AdminSecret = "changeme"

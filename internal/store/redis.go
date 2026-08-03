@@ -195,24 +195,92 @@ func (s *Store) GetRate(ctx context.Context, key string) (int64, error) {
 
 const keyBlockedIPs = "blocked_ips"
 
-// IsIPBlocked checks if an IP is in the block list.
+// autoBanPrefix namespaces the TTL ban-flag key. Deliberately distinct from
+// the "autoban:<ip>" strike counter used by IncrAutoBanCounter below — the two
+// used to collide on the same key, which made an auto-ban both fire on the
+// very first high-risk hit (any write to the shared key satisfied IsIPBlocked)
+// and inherit the counter's 10-minute TTL instead of AutoBanTTL.
+const autoBanPrefix = "autoban_active:"
+
+// IsIPBlocked checks if an IP is blocked, either permanently (admin-initiated,
+// via the "blocked_ips" set) or by a still-live behaviour auto-ban (TTL key —
+// see AutoBanIP).
 func (s *Store) IsIPBlocked(ctx context.Context, ip string) (bool, error) {
-	return s.client.SIsMember(ctx, tkey(ctx, keyBlockedIPs), ip).Result()
+	member, err := s.client.SIsMember(ctx, tkey(ctx, keyBlockedIPs), ip).Result()
+	if err != nil {
+		return false, err
+	}
+	if member {
+		return true, nil
+	}
+	n, err := s.client.Exists(ctx, tkey(ctx, autoBanPrefix+ip)).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
-// BlockIP adds an IP to the block list.
+// BlockIP adds an IP to the permanent block list. This is the admin-initiated
+// path (POST /api/blocked-ips) — it never expires on its own, matching the
+// intent of an operator deliberately blocking an IP.
 func (s *Store) BlockIP(ctx context.Context, ip string) error {
 	return s.client.SAdd(ctx, tkey(ctx, keyBlockedIPs), ip).Err()
 }
 
-// UnblockIP removes an IP from the block list.
-func (s *Store) UnblockIP(ctx context.Context, ip string) error {
-	return s.client.SRem(ctx, tkey(ctx, keyBlockedIPs), ip).Err()
+// AutoBanIP blocks an IP for a bounded duration. Used by behaviour-based
+// auto-banning (internal/middleware/behavior.go): unlike BlockIP, the
+// verdict here is a heuristic score crossing a threshold, not an operator
+// decision, so the ban self-expires instead of requiring a manual unblock.
+func (s *Store) AutoBanIP(ctx context.Context, ip string, ttl time.Duration) error {
+	return s.client.Set(ctx, tkey(ctx, autoBanPrefix+ip), "1", ttl).Err()
 }
 
-// GetBlockedIPs returns all blocked IPs.
+// UnblockIP removes an IP from both the permanent block list and any live
+// auto-ban, so a single admin action lifts a block regardless of its source.
+func (s *Store) UnblockIP(ctx context.Context, ip string) error {
+	pipe := s.client.Pipeline()
+	pipe.SRem(ctx, tkey(ctx, keyBlockedIPs), ip)
+	pipe.Del(ctx, tkey(ctx, autoBanPrefix+ip))
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// GetBlockedIPs returns every currently-blocked IP: the permanent admin list
+// plus any IP still under a live behaviour auto-ban.
 func (s *Store) GetBlockedIPs(ctx context.Context) ([]string, error) {
-	return s.client.SMembers(ctx, tkey(ctx, keyBlockedIPs)).Result()
+	permanent, err := s.client.SMembers(ctx, tkey(ctx, keyBlockedIPs)).Result()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(permanent))
+	out := make([]string, 0, len(permanent))
+	for _, ip := range permanent {
+		if !seen[ip] {
+			seen[ip] = true
+			out = append(out, ip)
+		}
+	}
+
+	prefix := tkey(ctx, autoBanPrefix)
+	var cursor uint64
+	for {
+		keys, next, err := s.client.Scan(ctx, cursor, prefix+"*", 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range keys {
+			ip := strings.TrimPrefix(k, prefix)
+			if !seen[ip] {
+				seen[ip] = true
+				out = append(out, ip)
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return out, nil
 }
 
 // ── Metrics ───────────────────────────────────────────────────────────────────

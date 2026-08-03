@@ -66,6 +66,13 @@ func (f *fakeStore) BlockIP(_ context.Context, ip string) error {
 	f.blockedIPs[ip] = true
 	return nil
 }
+func (f *fakeStore) AutoBanIP(_ context.Context, ip string, _ time.Duration) error {
+	if f.blockedIPs == nil {
+		f.blockedIPs = map[string]bool{}
+	}
+	f.blockedIPs[ip] = true
+	return nil
+}
 func (f *fakeStore) IncrMetric(context.Context, string) {}
 
 func (f *fakeStore) IncrAutoBanCounter(context.Context, string) (int64, error) {

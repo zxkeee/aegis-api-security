@@ -35,9 +35,11 @@ type IPBlockChecker interface {
 	IsIPBlocked(ctx context.Context, ip string) (bool, error)
 }
 
-// IPBlocker blocks an IP (used by behaviour auto-ban).
+// IPBlocker blocks an IP, either permanently (admin-initiated) or for a
+// bounded duration (behaviour auto-ban — see AutoBanIP).
 type IPBlocker interface {
 	BlockIP(ctx context.Context, ip string) error
+	AutoBanIP(ctx context.Context, ip string, ttl time.Duration) error
 }
 
 // MetricsSink increments a named counter.

@@ -49,6 +49,65 @@ func TestRedis_BlockedIPsIsolated(t *testing.T) {
 	}
 }
 
+func TestRedis_AutoBanExpiresAndIsUnblockable(t *testing.T) {
+	s := testStore(t)
+	ctx := ctxFor("acme")
+
+	if err := s.AutoBanIP(ctx, "9.9.9.9", 50*time.Millisecond); err != nil {
+		t.Fatalf("AutoBanIP: %v", err)
+	}
+	if ok, _ := s.IsIPBlocked(ctx, "9.9.9.9"); !ok {
+		t.Fatal("IP should be blocked immediately after AutoBanIP")
+	}
+	if ips, _ := s.GetBlockedIPs(ctx); len(ips) != 1 || ips[0] != "9.9.9.9" {
+		t.Fatalf("GetBlockedIPs should list the auto-banned IP, got %v", ips)
+	}
+
+	// An admin can lift an auto-ban early via the same UnblockIP path used for
+	// permanent blocks — the false-positive escape hatch.
+	if err := s.UnblockIP(ctx, "9.9.9.9"); err != nil {
+		t.Fatalf("UnblockIP: %v", err)
+	}
+	if ok, _ := s.IsIPBlocked(ctx, "9.9.9.9"); ok {
+		t.Fatal("IP should be unblocked after UnblockIP")
+	}
+
+	// And, independently, the ban self-expires if nobody intervenes.
+	if err := s.AutoBanIP(ctx, "8.8.8.8", 50*time.Millisecond); err != nil {
+		t.Fatalf("AutoBanIP: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if ok, _ := s.IsIPBlocked(ctx, "8.8.8.8"); ok {
+		t.Fatal("auto-ban should have expired on its own")
+	}
+}
+
+// TestRedis_AutoBanCounterDoesNotCollideWithBanFlag guards against a real bug
+// found while verifying this: the strike counter (IncrAutoBanCounter, used to
+// require 3 high-risk hits before banning) and the TTL ban flag (AutoBanIP)
+// must live on different Redis keys. They used to share "autoban:<ip>", which
+// made IsIPBlocked true after the very FIRST strike instead of the third.
+func TestRedis_AutoBanCounterDoesNotCollideWithBanFlag(t *testing.T) {
+	s := testStore(t)
+	ctx := ctxFor("acme")
+
+	for i := 0; i < 2; i++ {
+		if _, err := s.IncrAutoBanCounter(ctx, "5.5.5.5"); err != nil {
+			t.Fatalf("IncrAutoBanCounter: %v", err)
+		}
+	}
+	if ok, _ := s.IsIPBlocked(ctx, "5.5.5.5"); ok {
+		t.Fatal("two strikes must not block the IP — only AutoBanIP (called on the 3rd) should")
+	}
+
+	if err := s.AutoBanIP(ctx, "5.5.5.5", time.Minute); err != nil {
+		t.Fatalf("AutoBanIP: %v", err)
+	}
+	if ok, _ := s.IsIPBlocked(ctx, "5.5.5.5"); !ok {
+		t.Fatal("IP should be blocked after AutoBanIP")
+	}
+}
+
 func TestRedis_MetricsIsolated(t *testing.T) {
 	s := testStore(t)
 	acme, globex := ctxFor("acme"), ctxFor("globex")

@@ -429,6 +429,13 @@ type BehaviorConfig struct {
 	Enabled        bool `yaml:"enabled"`
 	ScoreThreshold int  `yaml:"score_threshold"`
 	WindowSeconds  int  `yaml:"window_seconds"`
+	// AutoBanTTL bounds how long a behaviour-triggered auto-ban lasts. Unlike an
+	// admin-initiated block (POST /api/blocked-ips, permanent by intent), an
+	// auto-ban is a heuristic verdict and can be wrong — a legitimate client with
+	// buggy retry logic can trip the same score threshold a scanner would. A
+	// self-expiring ban bounds that blast radius without needing an operator to
+	// notice and manually unblock. Default 30m.
+	AutoBanTTL time.Duration `yaml:"auto_ban_ttl"`
 }
 
 type IPGuardConfig struct {
@@ -649,6 +656,9 @@ func Load(path string) (GatewayConfig, error) {
 	if cfg.Security.Behavior.WindowSeconds == 0 {
 		cfg.Security.Behavior.WindowSeconds = 60
 	}
+	if cfg.Security.Behavior.AutoBanTTL == 0 {
+		cfg.Security.Behavior.AutoBanTTL = 30 * time.Minute
+	}
 	if cfg.Security.Abuse.EnumThreshold == 0 {
 		cfg.Security.Abuse.EnumThreshold = 50
 	}
@@ -712,6 +722,18 @@ func Validate(cfg GatewayConfig) error {
 		}
 		if cfg.Security.WAF.AnomalyThreshold < 0 {
 			return errors.New("waf.anomaly_threshold must not be negative")
+		}
+	}
+	if cfg.Security.Behavior.Enabled {
+		window := time.Duration(cfg.Security.Behavior.WindowSeconds) * time.Second
+		if cfg.Security.Behavior.AutoBanTTL < window {
+			// The score an auto-ban is based on decays over WindowSeconds (the
+			// request/error counters behind it carry that same TTL). A shorter
+			// AutoBanTTL just re-arms itself the instant it expires as long as
+			// traffic keeps flowing — the ban flag clears but the still-elevated
+			// score immediately re-trips it, so it never actually lifts.
+			return fmt.Errorf("behavior.auto_ban_ttl (%s) must be >= behavior.window_seconds (%s), or an auto-ban can never actually expire under sustained traffic",
+				cfg.Security.Behavior.AutoBanTTL, window)
 		}
 	}
 	if err := validateAdminSecret(cfg); err != nil {

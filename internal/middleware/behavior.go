@@ -29,10 +29,11 @@ func BehaviorAnalysis(cfg config.BehaviorConfig, log Logger, st behaviorStore) M
 			if score >= cfg.ScoreThreshold {
 				count, _ := st.IncrAutoBanCounter(r.Context(), ip)
 				if count >= 3 {
-					if err := st.BlockIP(r.Context(), ip); err == nil {
+					if err := st.AutoBanIP(r.Context(), ip, cfg.AutoBanTTL); err == nil {
 						log.Warn("behavior: auto-banned IP", map[string]any{
 							"ip":    ip,
 							"score": score,
+							"ttl":   cfg.AutoBanTTL.String(),
 						})
 						st.IncrMetric(r.Context(), "behavior_autoban")
 					}
