@@ -93,6 +93,14 @@ gateway:
     waf:
       enabled: true
       block_mode: true
+      # The built-in starter ruleset (use_crs: false) is dev/demo-grade —
+      # simple signature regexes, evadable by any competent attacker. These
+      # are "Enterprise Defaults": use the full OWASP Core Rule Set.
+      # Roll out with block_mode: false first if this is a first deployment,
+      # tune false positives (paranoia_level/anomaly_threshold), then enforce.
+      use_crs: true
+      paranoia_level: 1
+      anomaly_threshold: 5
     bot:
       enabled: true
     behavior:

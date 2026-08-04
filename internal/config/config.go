@@ -598,7 +598,12 @@ type RouteConfig struct {
 }
 
 type RegistryConfig struct {
-	Enabled      bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// DSN is currently unwired: nothing in the codebase reads it yet — only
+	// SignatureFreshnessSecs below is consulted (by ServiceAuth). Whoever
+	// wires up the service registry's own datastore MUST route this DSN
+	// through applyEnvOverrides (config.go) with an AEGIS_* env var, the same
+	// way ForensicDSN is handled, so it never has to live in a YAML file.
 	DSN          string `yaml:"dsn"`
 	CacheTTLSecs int    `yaml:"cache_ttl_secs"`
 	RotationDays int    `yaml:"rotation_days"`
