@@ -63,7 +63,7 @@ redis:
   sentinel:
     master_name: ""        # e.g. "mymaster"
     addrs: []              # e.g. ["sentinel-1:26379","sentinel-2:26379","sentinel-3:26379"]
-    sentinel_password: ""  # only when sentinels themselves require auth
+    sentinel_password: ""  # only when sentinels themselves require auth; via AEGIS_REDIS_SENTINEL_PASSWORD
 
 logging:
   level: "info"

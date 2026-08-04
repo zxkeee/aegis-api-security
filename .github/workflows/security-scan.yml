@@ -43,13 +43,13 @@ jobs:
       - name: Start Redis (password-protected)
         run: |
           docker run -d --name aegis-scan-redis -p 6379:6379 \
-            redis:7-alpine redis-server --requirepass scanpass
+            redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf redis-server --requirepass scanpass
 
       # Disposable upstream so the proxy has somewhere to forward to.
       - name: Start echo backend
         run: |
           docker run -d --name aegis-scan-echo -p 3000:8080 \
-            mendhak/http-https-echo:31
+            mendhak/http-https-echo:31@sha256:64208b871594c0eeb2a3c88736b6eb170dcb8edaa7a748c047f7fd62006e65ed
 
       - name: Launch AEGIS
         env:
@@ -83,7 +83,7 @@ jobs:
           done < tests/dynamic/nuclei-ignore.txt
 
           docker run --rm --network host -v "$PWD/tests/dynamic:/work" \
-            projectdiscovery/nuclei:latest \
+            projectdiscovery/nuclei:v3.11.0 \
             -u http://127.0.0.1:8081 \
             -severity high,critical -ni -rl 80 -timeout 5 -retries 1 \
             "${EID_ARGS[@]}" \

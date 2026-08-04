@@ -36,13 +36,13 @@ jobs:
       - name: Start Redis (password-protected)
         run: |
           docker run -d --name aegis-e2e-redis -p 6379:6379 \
-            redis:7-alpine redis-server --requirepass scanpass
+            redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf redis-server --requirepass scanpass
 
       - name: Start PostgreSQL
         run: |
           docker run -d --name aegis-e2e-postgres -p 5432:5432 \
             -e POSTGRES_USER=aegis -e POSTGRES_PASSWORD=aegis -e POSTGRES_DB=aegis \
-            postgres:15-alpine
+            postgres:15-alpine@sha256:cae15a3b718f23497a60b7cafdcf205216d7949680972da0584db00fb68bf3e6
           # Wait for the database to accept connections.
           for i in $(seq 1 30); do
             if docker exec aegis-e2e-postgres pg_isready -U aegis -q; then
@@ -54,7 +54,7 @@ jobs:
       - name: Start echo backend
         run: |
           docker run -d --name aegis-e2e-echo -p 3000:8080 \
-            mendhak/http-https-echo:31
+            mendhak/http-https-echo:31@sha256:64208b871594c0eeb2a3c88736b6eb170dcb8edaa7a748c047f7fd62006e65ed
 
       - name: Launch AEGIS (catalog enabled)
         env:

@@ -1,7 +1,8 @@
 services:
   # ── API Security Gateway ─────────────────────────────────────────────────────
   # Required env vars (copy .env.example → .env and fill in values):
-  #   AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, AEGIS_JWT_SECRET (if auth.enabled)
+  #   AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, POSTGRES_PASSWORD,
+  #   AEGIS_JWT_SECRET (if auth.enabled)
   gateway:
     build: .
     # Use the compose-specific config (redis:6379, postgres, http cookie).
@@ -26,7 +27,7 @@ services:
       # Default the forensic/catalog/iam/audit DSN to the bundled PostgreSQL so
       # discovery, multi-tenancy, the audit log, SSO and retention work out of the
       # box. Override AEGIS_FORENSIC_DSN to point at an external database.
-      - AEGIS_FORENSIC_DSN=${AEGIS_FORENSIC_DSN:-postgres://aegis:${POSTGRES_PASSWORD:-aegis}@postgres:5432/aegis?sslmode=disable}
+      - AEGIS_FORENSIC_DSN=${AEGIS_FORENSIC_DSN:-postgres://aegis:${POSTGRES_PASSWORD}@postgres:5432/aegis?sslmode=disable}
       - AEGIS_OIDC_CLIENT_ID=${AEGIS_OIDC_CLIENT_ID:-}
       - AEGIS_OIDC_CLIENT_SECRET=${AEGIS_OIDC_CLIENT_SECRET:-}
     restart: unless-stopped
@@ -35,7 +36,7 @@ services:
 
   # ── Redis (State Store) ──────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf
     # Redis port is NOT exposed to the host — only reachable inside the aegis network.
     volumes:
       - redis_data:/data
@@ -58,13 +59,13 @@ services:
   # Not exposed to the host — only reachable inside the aegis network. Enables the
   # discovery catalog, multi-tenancy, admin audit log, OIDC SSO and retention.
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
       - POSTGRES_DB=aegis
       - POSTGRES_USER=aegis
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-aegis}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — see .env.example}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aegis -d aegis"]
       interval: 5s

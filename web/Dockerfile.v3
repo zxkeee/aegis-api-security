@@ -1,20 +1,20 @@
 # Builds the v3 (React) production site and serves it with the same tiny Go
 # server used for v1/v2 (static files + POST /api/pilot -> pilot-requests.jsonl).
 # Build context is web/ (this file's directory): `docker build -f Dockerfile.v3 .`
-FROM node:20-alpine AS webbuild
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS webbuild
 WORKDIR /site
 COPY v3/package.json v3/package-lock.json* ./
 RUN npm install
 COPY v3/ ./
 RUN npm run build
 
-FROM golang:1.22-alpine AS gobuild
+FROM golang:1.26-alpine@sha256:111d79159b2326f7e80c4a4706e1ba166acb0e2611df853955f3621828cd49e8 AS gobuild
 WORKDIR /src
 COPY go.mod ./
 COPY server.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/aegis-site .
 
-FROM alpine:3.20
+FROM alpine:3.20@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e
 RUN adduser -D -H app && mkdir -p /data && chown app /data
 WORKDIR /app
 COPY --from=gobuild /out/aegis-site /usr/local/bin/aegis-site

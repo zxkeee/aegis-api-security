@@ -259,6 +259,18 @@ func TestBlockIP_InvalidIP(t *testing.T) {
 	}
 }
 
+func TestBlockIP_RejectsLoopbackAndUnspecified(t *testing.T) {
+	h, _ := redisHandlers(t)
+	admin := ctxAs("default", iam.RoleAdmin, false)
+	for _, ip := range []string{"127.0.0.1", "0.0.0.0", "::1", "169.254.1.1"} {
+		rec, _ := doReq(h.blockIPHandler, http.MethodPost, "/api/blocked-ips", admin,
+			map[string]any{"ip": ip})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("block %q = %d, want 400", ip, rec.Code)
+		}
+	}
+}
+
 func TestBlockIP_ViewerForbidden(t *testing.T) {
 	h, _ := redisHandlers(t)
 	// Even with outer AdminAuth disabled, the in-handler requireMutator still
@@ -294,5 +306,18 @@ func TestRevokeJWT_MissingJTI(t *testing.T) {
 		map[string]any{"ttl_seconds": 60})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing jti = %d, want 400", rec.Code)
+	}
+}
+
+func TestRevokeJWT_RejectsNegativeTTL(t *testing.T) {
+	h, _ := redisHandlers(t)
+	admin := ctxAs("default", iam.RoleAdmin, false)
+	rec, _ := doReq(h.revokeJWT, http.MethodPost, "/api/jwt/revoke", admin,
+		map[string]any{"jti": "abc-123", "ttl_seconds": -1})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative ttl_seconds = %d, want 400", rec.Code)
+	}
+	if revoked, _ := h.store.IsJTIRevoked(context.Background(), "abc-123"); revoked {
+		t.Fatal("jti must not be revoked when ttl_seconds is rejected")
 	}
 }

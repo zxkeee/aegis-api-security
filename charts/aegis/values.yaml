@@ -141,6 +141,21 @@ redis:
       cpu: 200m
       memory: 128Mi
 
+# Restrict which pods can reach the admin plane at the network layer, on top
+# of the Service-type restriction above (ClusterIP alone doesn't stop another
+# pod anywhere in a flat cluster network from reaching it). Disabled by
+# default because it requires a CNI that enforces NetworkPolicy (Calico,
+# Cilium, etc.) — enable once you know your cluster supports it.
+networkPolicy:
+  enabled: false
+  # Pods allowed to reach the admin Service (port 8081). Empty = only pods
+  # matching this selector in the SAME namespace as the release; combine with
+  # namespaceSelector below to also allow another namespace (e.g. an
+  # operator/bastion namespace running kubectl port-forward or a VPN gateway).
+  adminIngress:
+    podSelector: {}
+    # namespaceSelector: {}
+
 # Pod disruption budget for HA
 podDisruptionBudget:
   enabled: true

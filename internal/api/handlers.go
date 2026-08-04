@@ -299,8 +299,13 @@ func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate IP format
-	if req.IP == "" || net.ParseIP(req.IP) == nil {
+	parsed := net.ParseIP(req.IP)
+	if req.IP == "" || parsed == nil {
 		writeError(w, http.StatusBadRequest, "valid IP address is required")
+		return
+	}
+	if isUnblockableIP(parsed) {
+		writeError(w, http.StatusBadRequest, "loopback, unspecified, and link-local addresses cannot be blocked")
 		return
 	}
 
@@ -345,6 +350,13 @@ func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "IP unblocked", "ip": ip})
 }
 
+// isUnblockableIP rejects addresses that would only cause self-inflicted
+// disruption if blocked: loopback, unspecified, and link-local — none of
+// which identify a real remote attacker.
+func isUnblockableIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+}
+
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
 func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
@@ -365,6 +377,10 @@ func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.JTI == "" {
 		writeError(w, http.StatusBadRequest, "jti is required")
+		return
+	}
+	if req.TTLSeconds < 0 {
+		writeError(w, http.StatusBadRequest, "ttl_seconds must not be negative")
 		return
 	}
 

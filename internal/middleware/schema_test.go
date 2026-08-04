@@ -124,6 +124,65 @@ func TestSchemaValidation_BodyRestoredForBackend(t *testing.T) {
 	}
 }
 
+func TestSchemaValidation_OversizedBodyBlocked(t *testing.T) {
+	// BlockMode must fail closed on an oversized body — an attacker cannot
+	// defeat schema enforcement by padding the body past MaxBodyBytes.
+	spec, err := discovery.ParseSpec([]byte(schemaTestSpec))
+	if err != nil {
+		t.Fatalf("ParseSpec: %v", err)
+	}
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+	h := SchemaValidation(config.SchemaConfig{Enabled: true, BlockMode: true, MaxBodyBytes: 16}, spec, fakeLogger{}, &fakeStore{})(next)
+
+	rec := httptest.NewRecorder()
+	body := `{"email":"a@b.c","age":3}` // > 16 bytes
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body)))
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if reached {
+		t.Error("backend should not be reached when body exceeds the schema validation cap in block mode")
+	}
+}
+
+func TestSchemaValidation_OversizedBodyMonitorPassesThroughWithSignal(t *testing.T) {
+	// Monitor mode still passes an oversized body through (fail-open by design),
+	// but must record the skip so it's visible to operators, not silent.
+	spec, err := discovery.ParseSpec([]byte(schemaTestSpec))
+	if err != nil {
+		t.Fatalf("ParseSpec: %v", err)
+	}
+	reached := false
+	var gotBody string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	})
+	store := &fakeStore{}
+	h := SchemaValidation(config.SchemaConfig{Enabled: true, BlockMode: false, MaxBodyBytes: 16}, spec, fakeLogger{}, store)(next)
+
+	rec := httptest.NewRecorder()
+	body := `{"email":"a@b.c","age":3}` // > 16 bytes
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK || !reached {
+		t.Errorf("monitor mode should pass oversized body through: status=%d reached=%v", rec.Code, reached)
+	}
+	if gotBody != body {
+		t.Errorf("backend saw body %q, want %q (must be reassembled from the bounded read)", gotBody, body)
+	}
+	if store.metrics["schema_skipped_oversized"] == 0 {
+		t.Error("expected schema_skipped_oversized metric to be recorded even in monitor mode")
+	}
+}
+
 func TestSchemaValidation_Disabled(t *testing.T) {
 	// Disabled (or nil spec) must be a pure passthrough.
 	if got := SchemaValidation(config.SchemaConfig{Enabled: false}, nil, fakeLogger{}, &fakeStore{}); got == nil {

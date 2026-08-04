@@ -710,6 +710,9 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	if v := os.Getenv("AEGIS_REDIS_PASSWORD"); v != "" {
 		cfg.Redis.Password = v
 	}
+	if v := os.Getenv("AEGIS_REDIS_SENTINEL_PASSWORD"); v != "" {
+		cfg.Redis.Sentinel.SentinelPassword = v
+	}
 	if v := os.Getenv("AEGIS_JWT_SECRET"); v != "" {
 		cfg.Security.Auth.Secret = v
 	}
@@ -763,6 +766,9 @@ func Validate(cfg GatewayConfig) error {
 		return err
 	}
 	if err := validateJWT(cfg); err != nil {
+		return err
+	}
+	if err := validatePropagationSecret(cfg); err != nil {
 		return err
 	}
 	if err := validateTrustedProxies(cfg); err != nil {
@@ -1002,6 +1008,26 @@ func validateJWT(cfg GatewayConfig) error {
 	}
 	if len(cfg.Security.Auth.Secret) < 32 {
 		return errors.New("auth.secret is too short; minimum 32 characters required for HMAC-SHA256")
+	}
+	return nil
+}
+
+// validatePropagationSecret checks auth.propagation_secret — the HMAC key that
+// signs the X-Gateway-Signature identity header backends trust via
+// sdk/gatewayverify — with the same strength rules as admin_secret/auth.secret.
+// It falls back to auth.secret when unset (see jwt.go), so it is only
+// validated when explicitly configured.
+func validatePropagationSecret(cfg GatewayConfig) error {
+	secret := cfg.Security.Auth.PropagationSecret
+	if secret == "" {
+		return nil
+	}
+	if slices.Contains(insecurePlaceholders, secret) {
+		return errors.New("auth.propagation_secret contains an insecure placeholder; " +
+			"set AEGIS_PROPAGATION_SECRET to a strong random value (e.g. openssl rand -hex 32)")
+	}
+	if len(secret) < 32 {
+		return errors.New("auth.propagation_secret is too short; minimum 32 characters required for HMAC-SHA256")
 	}
 	return nil
 }

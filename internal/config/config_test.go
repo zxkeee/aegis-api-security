@@ -121,6 +121,38 @@ func TestValidate_JWKSURLSatisfiesAuth(t *testing.T) {
 	}
 }
 
+func TestValidate_PropagationSecretOptional(t *testing.T) {
+	c := validBase()
+	c.Security.Auth.PropagationSecret = "" // falls back to auth.secret, not required
+	if err := Validate(c); err != nil {
+		t.Fatalf("empty propagation_secret should be accepted (falls back to auth.secret), got %v", err)
+	}
+}
+
+func TestValidate_RejectsPlaceholderPropagationSecret(t *testing.T) {
+	c := validBase()
+	c.Security.Auth.PropagationSecret = "changeme"
+	if err := Validate(c); err == nil {
+		t.Fatal("placeholder propagation_secret must be rejected")
+	}
+}
+
+func TestValidate_RejectsShortPropagationSecret(t *testing.T) {
+	c := validBase()
+	c.Security.Auth.PropagationSecret = "too-short"
+	if err := Validate(c); err == nil {
+		t.Fatal("propagation_secret under 32 chars must be rejected")
+	}
+}
+
+func TestValidate_AcceptsStrongPropagationSecret(t *testing.T) {
+	c := validBase()
+	c.Security.Auth.PropagationSecret = strings.Repeat("a", 32)
+	if err := Validate(c); err != nil {
+		t.Fatalf("strong propagation_secret should be accepted, got %v", err)
+	}
+}
+
 func TestValidate_Alerting(t *testing.T) {
 	t.Run("valid slack/critical", func(t *testing.T) {
 		c := validBase()
@@ -401,6 +433,15 @@ func TestApplyEnvOverrides_OIDCSecrets(t *testing.T) {
 	applyEnvOverrides(&c)
 	if c.OIDC.ClientID != "env-cid" || c.OIDC.ClientSecret != "env-secret" {
 		t.Fatalf("oidc secrets not overridden from env: %+v", c.OIDC)
+	}
+}
+
+func TestApplyEnvOverrides_RedisSentinelPassword(t *testing.T) {
+	t.Setenv("AEGIS_REDIS_SENTINEL_PASSWORD", "env-sentinel-pass")
+	c := GatewayConfig{}
+	applyEnvOverrides(&c)
+	if c.Redis.Sentinel.SentinelPassword != "env-sentinel-pass" {
+		t.Fatalf("sentinel password not overridden from env: %+v", c.Redis.Sentinel)
 	}
 }
 

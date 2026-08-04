@@ -44,12 +44,37 @@ func SchemaValidation(cfg config.SchemaConfig, spec *discovery.Spec, log Logger,
 			}
 
 			// Buffer the body (bounded) only when the operation documents one, then
-			// restore it for the proxy. A body over the cap streams through
-			// unvalidated rather than risking OOM.
+			// restore it for the proxy. A body over the cap cannot be validated
+			// without risking OOM: in BlockMode this is a fail-closed reject (an
+			// attacker cannot defeat positive-security enforcement by padding the
+			// body past the cap); in monitor mode it passes through but is still
+			// recorded, so operators can see the enforcement-coverage gap.
 			var body []byte
 			if r.Body != nil && op.Body != nil {
 				buf, tooBig, rest := readBounded(r.Body, maxBody)
 				if tooBig {
+					ip := RealIP(r)
+					extra := map[string]any{"template": template, "max_body_bytes": maxBody}
+
+					if cfg.BlockMode {
+						log.BlockEvent("schema_skipped_oversized", ip, r.URL.Path, r.Method, extra)
+						st.IncrMetric(r.Context(), "schema_skipped_oversized")
+						st.PushForensic(r.Context(), secevent.Entry{
+							Tenant: tenant.From(r.Context()), Timestamp: time.Now().UTC(),
+							IP: ip, Path: r.URL.Path, Method: r.Method,
+							Reason: "schema_skipped_oversized", Code: http.StatusRequestEntityTooLarge, Extra: extra,
+						})
+						http.Error(w, "request body exceeds schema validation limit", http.StatusRequestEntityTooLarge)
+						return
+					}
+
+					log.BlockEvent("schema_skipped_oversized_monitor", ip, r.URL.Path, r.Method, extra)
+					st.IncrMetric(r.Context(), "schema_skipped_oversized")
+					st.PushForensic(r.Context(), secevent.Entry{
+						Tenant: tenant.From(r.Context()), Timestamp: time.Now().UTC(),
+						IP: ip, Path: r.URL.Path, Method: r.Method,
+						Reason: "schema_skipped_oversized_monitor", Code: http.StatusOK, Extra: extra,
+					})
 					r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), rest))
 					next.ServeHTTP(w, r)
 					return

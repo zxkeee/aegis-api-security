@@ -25,6 +25,9 @@ spec:
         {{- include "aegis.selectorLabels" . | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: 30
+      # AEGIS never calls the Kubernetes API — don't hand a live cluster token
+      # to a container that also terminates public-ish traffic.
+      automountServiceAccountToken: false
       containers:
         - name: gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
