@@ -128,12 +128,20 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] Per-IP brute-force rate limit on `/api/login`: 8 failures / 5 min →
       `429 Retry-After`. Counter only consumes budget on failure (successful
       operators never throttle). Validated live: 8× 401 → 9th request 429.
-- [ ] Migrate `github.com/lib/pq` → `github.com/jackc/pgx/v5`. `lib/pq` has
-      been in maintenance-only mode for years (security fixes only; its own
-      README recommends `pgx` for new projects). Not urgent — no known CVE,
-      `govulncheck` stays clean — but a shrinking bus factor for the component
-      talking to the catalog/forensic/iam PostgreSQL database. Do opportunistically,
-      not as a release blocker.
+- [x] Migrate `github.com/lib/pq` → `github.com/jackc/pgx/v5`. All 6 call sites
+      (audit, discovery catalog, forensic sink, iam, retention, pgtest) now open
+      via `sql.Open("pgx", dsn)` through `github.com/jackc/pgx/v5/stdlib`.
+      `pq.Array()` binding was dropped — pgx's `database/sql` compat layer binds
+      plain Go slices (`[]string`, `[]int`) against `text[]`/`ANY($n)` natively;
+      scanning an array column back still needs an adapter, done via
+      `pgtype.NewMap().SQLScanner(&dest)` (verified empirically against a live
+      DB: plain-slice scan target errors, the adapter round-trips correctly).
+      `pq.QuoteIdentifier` → `pgx.Identifier{...}.Sanitize()` in `pgtest`. Bumped
+      `golang.org/x/text` v0.38.0→v0.39.0 along the way — pulled in transitively
+      by pgx, and govulncheck flagged a real, reachable CVE (GO-2026-5970) in the
+      old version via `audit.New`. Verified: full test suite incl. PG/Redis
+      integration tests + `-race`, coverage-gate (no package regressed),
+      govulncheck/gosec/golangci-lint clean, static (`CGO_ENABLED=0`) build.
 
 ---
 
