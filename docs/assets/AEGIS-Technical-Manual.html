@@ -638,9 +638,10 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
   <div class="grid grid-2">
     <div class="card">
       <h4>Redis</h4>
-      <div class="d">Every key family (rate limits, blocklists, sessions, forensic buffer, ~15 families
-        total) is prefixed <code>gw:t:&lt;tenant&gt;:*</code> — cross-tenant key access is
-        structurally impossible, not policy-enforced.</div>
+      <div class="d">Every per-tenant key family (rate limits, blocklists, forensic buffer, ~15
+        total) is prefixed <code>gw:t:&lt;tenant&gt;:*</code> — cross-tenant access is structurally
+        impossible. One exception: sessions carry the tenant in the payload of a flat
+        <code>gw:session:&lt;token&gt;</code> key, checked by <code>AdminAuth</code>.</div>
     </div>
     <div class="card">
       <h4>PostgreSQL</h4>
