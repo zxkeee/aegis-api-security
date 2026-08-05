@@ -339,7 +339,7 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
   <div class="cover-bottom">
     <div><div class="cover-stat-label">Language</div><div class="cover-stat-value">Go, single static binary</div></div>
     <div><div class="cover-stat-label">Controls per request</div><div class="cover-stat-value">20, ordered chain</div></div>
-    <div><div class="cover-stat-label">WAF engine</div><div class="cover-stat-value">Coraza + OWASP CRS v4</div></div>
+    <div><div class="cover-stat-label">WAF engine</div><div class="cover-stat-value">Coraza (CRS v4 opt-in)</div></div>
     <div><div class="cover-stat-label">Deployment</div><div class="cover-stat-value">Self-hosted, on-prem / VPC</div></div>
   </div>
 </section>
@@ -409,8 +409,9 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
   <h3>The data-plane middleware chain (source of truth: <code>internal/gateway/chain.go</code>)</h3>
   <p class="muted">Ordering is load-bearing and deliberate — e.g. tenant resolution must run
     first; spoofable identity headers are stripped before anything downstream trusts them;
-    discovery sits inside auth/DLP so it can enrich each observation with identity and PII
-    signals, and outside the proxy call so it captures the final response status.</p>
+    discovery wraps <em>around</em> auth/DLP (outside them in the chain) so it can enrich each
+    observation, after the fact, with the identity and PII signals those layers attach, and
+    outside the proxy call so it captures the final response status.</p>
   <div class="chain">
     <div class="chain-step">TenantResolve</div>
     <div class="chain-step">CleanHeaders</div>
@@ -513,11 +514,13 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
 
   <div class="keep">
     <p class="eyebrow" style="margin-top:9mm">Complementary signature layer</p>
-    <h3 style="margin-top:3mm">WAF: Coraza + OWASP CRS v4</h3>
-    <p>Alongside behavioural detection, the gateway runs the full <strong>OWASP Core Rule Set v4</strong>
-      (~900 rules) through the Coraza engine, with anomaly scoring and configurable paranoia levels
-      (1–4). <code>block_mode: false</code> runs the same rules in detection-only mode — the
-      standard path for tuning false positives before turning on enforcement.</p>
+    <h3 style="margin-top:3mm">WAF: Coraza, OWASP CRS v4 opt-in</h3>
+    <p>Alongside behavioural detection, the gateway runs Coraza — the built-in starter ruleset by
+      default (zero-setup, dev/demo-grade), or the full <strong>OWASP Core Rule Set v4</strong>
+      (~900 rules, anomaly scoring, paranoia levels 1–4) with <code>use_crs: true</code> — the
+      production-grade choice, and the default in the Helm chart's enterprise profile.
+      <code>block_mode: false</code> runs either ruleset in detection-only mode for tuning false
+      positives first.</p>
   </div>
 </section>
 
@@ -558,9 +561,10 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
   <div class="callout warn">
     <div class="k">Scope, stated plainly</div>
     <p>OWASP API Top-10 coverage today: BOLA/BFLA (API1/API5) enforced, PII-exposure and
-      shadow-endpoint findings (API3/API9) detected. Mass assignment (API6), injection-pattern
-      findings, and broken-auth velocity detection are not yet built. PCI-DSS/HIPAA/GDPR
-      compliance templates are not yet built — NIS2/ISO 27001 only, today.</p>
+      shadow-endpoint findings (API3/API9) detected, mass assignment (API6) enforced via schema
+      validation (<code>additionalProperties: false</code> rejects undocumented body fields).
+      Injection-pattern findings and broken-auth velocity detection are not yet built.
+      PCI-DSS/HIPAA/GDPR compliance templates are not yet built — NIS2/ISO 27001 only, today.</p>
   </div>
 </section>
 
@@ -687,22 +691,25 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
 
   <p class="eyebrow">07 · Security of the tool itself</p>
   <h2>A security product that is audited the same way it audits others</h2>
-  <p class="lede">Every commit runs three independent CI gates. None of this is a one-time claim
-    — it is enforced on every push, and it has caught real bugs, not just theoretical ones.</p>
+  <p class="lede">Five GitHub Actions workflows run on every commit. None of this is a one-time
+    claim — it is enforced on every push, and it has caught real bugs, not just theoretical
+    ones.</p>
 
-  <div class="grid grid-3">
-    <div class="card"><h4>Dependency &amp; stdlib CVEs</h4><div class="d"><code>govulncheck</code> against
-      the module graph and the pinned Go toolchain, every commit.</div></div>
-    <div class="card"><h4>Static security analysis</h4><div class="d"><code>gosec</code> at medium+
-      severity — injection, unsafe crypto, path traversal classes, every commit.</div></div>
-    <div class="card"><h4>Test coverage gate</h4><div class="d">Per-package coverage floors that only
-      ratchet upward, enforced against live Redis + PostgreSQL, never lowered.</div></div>
+  <div class="grid grid-4">
+    <div class="card"><h4>Dependency &amp; stdlib CVEs</h4><div class="d"><code>govulncheck</code>,
+      pinned Go toolchain, every commit.</div></div>
+    <div class="card"><h4>Static security analysis</h4><div class="d"><code>gosec</code> medium+
+      and <code>golangci-lint</code>, every commit.</div></div>
+    <div class="card"><h4>Test coverage gate</h4><div class="d">Per-package floors that only ratchet
+      upward, against live Redis + PostgreSQL.</div></div>
+    <div class="card"><h4>Dynamic scan</h4><div class="d">E2E smoke test plus a
+      <code>nuclei</code> pass on a live admin plane.</div></div>
   </div>
 
   <h3>Current coverage (against live Redis + PostgreSQL, not mocks)</h3>
-  <p class="mono muted">tenant / tlsfp 100% · gatewayverify / classify 93% · proxy 92% · config 90% ·
-    gateway 87% · sso 88% · store 85% · discovery 84% · iam / middleware 82% · retention 81% ·
-    audit 80% · api 76% — every critical package at or above the 70% release floor.</p>
+  <p class="mono muted">tenant / tlsfp 100% · gatewayverify 94% · classify / proxy 92% · config 90% ·
+    gateway 87% · sso 88% · discovery 84% · store / middleware 83% · iam / retention 82% ·
+    audit 81% · api 78% — every critical package at or above the 70% release floor.</p>
 
   <h3>A concrete example: this month's self-audit</h3>
   <p>A full pass across the codebase (automated scanners plus manual review of everything changed
@@ -711,13 +718,13 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
     <li><strong>Log injection (CWE-117)</strong> — a client IP reached a log line without the same
       CR/LF stripping applied to the adjacent fields on that line. Fixed and covered with a
       regression test.</li>
-    <li><strong>A stdlib CVE already patched in one Go module, silently unpatched in a second one</strong>
-      — a separate module (the marketing site's tiny backend) had no pinned toolchain, so
-      <code>govulncheck</code> found four real, reachable CVEs including the exact TLS
-      vulnerability already fixed elsewhere in the codebase weeks earlier. Pinned to match.</li>
-    <li><strong>A CI blind spot</strong> — that same second module was never scanned by any of the
-      three CI workflows at all, because it lives in its own <code>go.mod</code> and none of the
-      pipelines descended into it. Closed by adding it to all three.</li>
+    <li><strong>A stdlib CVE patched in one Go module, silently unpatched in a second</strong> — a
+      separate module (the marketing site's tiny backend) had no pinned toolchain, so
+      <code>govulncheck</code> found four real, reachable CVEs, including the exact TLS CVE
+      already fixed elsewhere weeks earlier. Pinned to match.</li>
+    <li><strong>A CI blind spot</strong> — that same second module was never scanned by any CI
+      workflow at all, because it lives in its own <code>go.mod</code> and none of the pipelines
+      descended into it. Closed by adding it everywhere Go checks run.</li>
     <li><strong>An untested new endpoint</strong> — a just-shipped admin API route had no unit test.
       Verified live on a running binary first (unauthenticated → 401, valid credential → correct
       data, invalid credential → 403), then covered.</li>
@@ -780,8 +787,9 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
     <tr>
       <td><strong>OWASP API Top-10 breadth</strong></td>
       <td><span class="pill pill-partial">partial</span></td>
-      <td>BOLA/BFLA (API1/API5) and PII/shadow-endpoint findings (API3/API9) are built. Mass
-        assignment (API6), injection-pattern findings, and broken-auth velocity are not yet.</td>
+      <td>BOLA/BFLA (API1/API5), PII/shadow-endpoint findings (API3/API9), and mass assignment
+        (API6, via schema enforcement) are built. Injection-pattern findings and broken-auth
+        velocity are not yet.</td>
     </tr>
   </table>
 
