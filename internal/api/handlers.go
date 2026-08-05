@@ -47,6 +47,29 @@ type handlers struct {
 	draining *atomic.Bool
 }
 
+// auditCrossTenantRead records a super-admin GET that spans a tenant other
+// than the operator's own (or spans every tenant). Regular mutating requests
+// are already recorded by serveAndAudit; GETs are deliberately NOT recorded
+// there to keep the audit log signal-rich, but a super-admin browsing another
+// tenant's users/audit-trail/tenant list is exactly the "who looked at tenant
+// B's data" question an auditor asks, so this narrow class of read is logged
+// explicitly instead. h.audit is nil-safe (Store.Record no-ops on a nil
+// receiver), so this is safe to call unconditionally.
+func (h *handlers) auditCrossTenantRead(r *http.Request, action, targetTenant string) {
+	h.audit.Record(audit.Entry{
+		TenantID:   tenant.From(r.Context()),
+		ActorID:    iam.UserID(r.Context()),
+		Role:       string(iam.FromContext(r.Context())),
+		SuperAdmin: true,
+		Action:     action,
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		Status:     http.StatusOK,
+		IP:         middleware.RealIP(r),
+		Detail:     "target_tenant=" + targetTenant,
+	})
+}
+
 // requireAuth is a defence-in-depth check called directly inside mutating
 // handlers. It ensures state-changing operations are always authenticated,
 // even if a future middleware refactor accidentally removes the outer check.

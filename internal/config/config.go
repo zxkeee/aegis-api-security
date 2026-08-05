@@ -56,6 +56,13 @@ type GatewayConfig struct {
 	AdminListen string `yaml:"admin_listen"`
 	AdminAuth   bool   `yaml:"admin_auth"`
 	AdminSecret string `yaml:"admin_secret"`
+	// AdminBootstrapSecretDisabled turns off the AEGIS_ADMIN_SECRET bearer-token
+	// admin auth path once real per-tenant IAM operators have been provisioned.
+	// The bearer path is an always-super-admin, un-auditable-per-operator,
+	// single-shared-credential bootstrap mechanism; it exists so a fresh
+	// install has a way in before any IAM user exists, not as a long-term
+	// credential. Set true after provisioning real users to close that path.
+	AdminBootstrapSecretDisabled bool `yaml:"admin_bootstrap_secret_disabled"`
 	// AdminSessionTTL is how long a console login session stays valid. Default 8h.
 	AdminSessionTTL time.Duration `yaml:"admin_session_ttl"`
 	// AdminCookieInsecure drops the Secure flag on the session cookie so the
@@ -345,10 +352,9 @@ type SchemaConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled    bool          `yaml:"enabled"`
-	Requests   int           `yaml:"requests"`
-	Window     time.Duration `yaml:"window"`
-	BurstLimit int           `yaml:"burst_limit"`
+	Enabled  bool          `yaml:"enabled"`
+	Requests int           `yaml:"requests"`
+	Window   time.Duration `yaml:"window"`
 	// FailClosed denies requests when the rate-limit backing store (Redis) is
 	// unavailable. Default false preserves availability (fail open); set true for
 	// high-assurance deployments where a Redis outage must not drop enforcement.
@@ -597,6 +603,15 @@ type RouteConfig struct {
 	RateLimit   *RateLimitConfig `yaml:"rate_limit"`
 }
 
+// RegistryConfig is EXPERIMENTAL / NOT YET WIRED INTO THE REQUEST PATH.
+// middleware.ServiceAuth (the HMAC service-to-service auth control this
+// config feeds) is never called from internal/gateway.chainSteps, and no
+// RegistryProvider implementation exists outside test fakes — there is no
+// real registry backend to look services up against. Setting Enabled: true
+// is rejected by config.Validate (see validateRegistry) specifically so an
+// operator can never believe this control is protecting live traffic when it
+// structurally cannot be. Remove that rejection only once ServiceAuth is
+// actually wired into the chain AND a real RegistryProvider is implemented.
 type RegistryConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// DSN is currently unwired: nothing in the codebase reads it yet — only
@@ -777,6 +792,12 @@ func Validate(cfg GatewayConfig) error {
 		return err
 	}
 	if err := validateTrustedProxies(cfg); err != nil {
+		return err
+	}
+	if err := validateIPGuard(cfg); err != nil {
+		return err
+	}
+	if err := validateRegistry(cfg); err != nil {
 		return err
 	}
 	if err := validateThreatFeed(cfg); err != nil {
@@ -1046,6 +1067,40 @@ func validateTrustedProxies(cfg GatewayConfig) error {
 		}
 	}
 	return nil
+}
+
+// validateRegistry rejects registry.enabled: true outright: see RegistryConfig's
+// doc comment — ServiceAuth is never wired into the request chain and no real
+// RegistryProvider exists, so this control would silently do nothing to
+// requests while giving an operator false confidence it's enforcing anything.
+func validateRegistry(cfg GatewayConfig) error {
+	if cfg.Registry.Enabled {
+		return errors.New("registry.enabled: true is rejected — the service-registry/ServiceAuth " +
+			"feature is not wired into the request path yet (see RegistryConfig's doc comment in " +
+			"internal/config/config.go); enabling it would give no actual protection")
+	}
+	return nil
+}
+
+// validateIPGuard rejects malformed whitelist/blacklist entries at startup
+// rather than letting IPGuard silently drop them at request time (a
+// misconfigured "10.0.0.0/8" entry used to just never match anything).
+func validateIPGuard(cfg GatewayConfig) error {
+	check := func(field string, entries []string) error {
+		for _, s := range entries {
+			if net.ParseIP(s) != nil {
+				continue
+			}
+			if _, _, err := net.ParseCIDR(s); err != nil {
+				return fmt.Errorf("ip_guard.%s: %q is not a valid IP address or CIDR", field, s)
+			}
+		}
+		return nil
+	}
+	if err := check("whitelist", cfg.Security.IPGuard.Whitelist); err != nil {
+		return err
+	}
+	return check("blacklist", cfg.Security.IPGuard.Blacklist)
 }
 
 func validateThreatFeed(cfg GatewayConfig) error {

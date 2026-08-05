@@ -106,7 +106,6 @@ security:
     enabled: true
     requests: 100
     window: 60s
-    burst_limit: 20
     # When true, deny requests if Redis is unavailable instead of failing open.
     # Default false favours availability; set true for high-assurance deployments.
     fail_closed: false
@@ -234,7 +233,7 @@ security:
     # max_body_bytes: 1048576  # body cap for validation (default 1 MiB)
 
 registry:
-  enabled: false
+  enabled: false  # EXPERIMENTAL, NOT YET WIRED — setting true fails config.Validate
   dsn: ""  # not yet wired up — see RegistryConfig's doc comment in internal/config/config.go
   cache_ttl_secs: 30
   rotation_days: 90

@@ -53,6 +53,14 @@ spec:
                   key: jwt-secret
                   optional: true
             {{- end }}
+            {{- if or .Values.secrets.forensicDsn .Values.secrets.existingSecret }}
+            - name: AEGIS_FORENSIC_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: forensic-dsn
+                  optional: true
+            {{- end }}
           ports:
             - name: gateway
               containerPort: 8080

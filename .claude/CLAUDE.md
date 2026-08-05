@@ -70,11 +70,12 @@ old chain.
 
 ### Middleware chain — order is load-bearing
 
-`buildHandlerChain` in `cmd/gateway/main.go` assembles the chain; the **first
-listed is outermost**. The ordering is deliberate (e.g. `TenantResolve` must run
-first; `CleanHeaders` strips spoofed identity before anything trusts it;
-`Discovery` sits inside auth/DLP so it can enrich the observation with identity
-and PII signals, and outside the proxy so it captures the final status). Read
+`BuildHandlerChain` (via `chainSteps`) in `internal/gateway/chain.go` assembles
+the chain; the **first listed is outermost**. The ordering is deliberate (e.g.
+`TenantResolve` must run first; `CleanHeaders` strips spoofed identity before
+anything trusts it; `Discovery` sits inside auth/DLP so it can enrich the
+observation with identity and PII signals, and outside the proxy so it captures
+the final status). Read
 that function before reordering anything. Each middleware lives in
 `internal/middleware/` and is a `func(http.Handler) http.Handler`; disabled
 features return `passthrough`.

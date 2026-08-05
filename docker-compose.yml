@@ -33,6 +33,15 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    # A compromised or WAF-bypassed request storm hitting this container alone
+    # must not be able to starve Redis/Postgres/Prometheus/Grafana sharing the
+    # same Docker host. Mirrors the limits already set in charts/aegis's Helm
+    # deployment for the same reason.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
 
   # ── Redis (State Store) ──────────────────────────────────────────────────────
   redis:
@@ -54,6 +63,13 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    deploy:
+      resources:
+        # --maxmemory above already caps Redis's own data usage at 256mb; this
+        # is the container-level ceiling (process + overhead), set a bit above it.
+        limits:
+          cpus: "0.5"
+          memory: 384M
 
   # ── PostgreSQL (durable catalog, forensics, IAM, audit) ──────────────────────
   # Not exposed to the host — only reachable inside the aegis network. Enables the
@@ -74,10 +90,19 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
 
   # ── Prometheus (Metrics Collection) ──────────────────────────────────────────
   # Prometheus is NOT exposed to the host — access via Grafana or kubectl port-forward.
   prometheus:
+    # TODO(security-audit): pin by digest like redis/postgres above, e.g.:
+    #   docker pull prom/prometheus:v2.52.0 && docker inspect --format='{{index .RepoDigests 0}}' prom/prometheus:v2.52.0
+    # Left as a tag pin for now — resolving the digest needs registry/Docker
+    # daemon access this change was made without.
     image: prom/prometheus:v2.52.0
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
@@ -104,6 +129,8 @@ services:
 
   # ── Grafana (Dashboards) ─────────────────────────────────────────────────────
   grafana:
+    # TODO(security-audit): pin by digest like redis/postgres above (see the
+    # matching TODO on the prometheus service).
     image: grafana/grafana:10.4.3
     ports:
       - "127.0.0.1:3000:3000"   # localhost only — do not expose publicly
@@ -115,6 +142,11 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
 
 volumes:
   redis_data:

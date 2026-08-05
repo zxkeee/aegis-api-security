@@ -57,7 +57,7 @@ autoscaling:
 #   helm install aegis . --set secrets.adminSecret=<value>
 secrets:
   # Name of an existing K8s Secret containing all required keys:
-  #   admin-secret, redis-password, jwt-secret (optional)
+  #   admin-secret, redis-password, jwt-secret (optional), forensic-dsn (optional)
   # When set, the values below are ignored.
   existingSecret: ""
   # Direct values — only used if existingSecret is empty.
@@ -66,10 +66,16 @@ secrets:
   #   helm install aegis . \
   #     --set secrets.adminSecret=$(openssl rand -hex 32) \
   #     --set secrets.redisPassword=$(openssl rand -hex 24) \
-  #     --set secrets.jwtSecret=$(openssl rand -hex 32)
+  #     --set secrets.jwtSecret=$(openssl rand -hex 32) \
+  #     --set secrets.forensicDsn="postgres://user:pass@pg-host:5432/aegis?sslmode=require"
   adminSecret: ""
   redisPassword: ""
   jwtSecret: ""
+  # forensicDsn is the ONLY supported way to set a credential-bearing Postgres
+  # DSN — NEVER put a real value in gateway.forensic_dsn below; the ConfigMap
+  # template force-blanks that field, so a value set there is silently
+  # dropped at render time rather than reaching the gateway at all.
+  forensicDsn: ""
 
 # Gateway configuration (injected as ConfigMap — no secrets here)
 gateway:
@@ -77,10 +83,18 @@ gateway:
   admin_listen: ":8081"
   admin_auth: true
   admin_secret: ""   # populated at runtime via AEGIS_ADMIN_SECRET env var
-  forensic_dsn: ""  # e.g., "postgres://user:pass@pg-host:5432/aegis?sslmode=require"
+  # Always "" here — populated at runtime via AEGIS_FORENSIC_DSN (see
+  # secrets.forensicDsn above). The ConfigMap template force-blanks this
+  # field regardless of what's set here, so setting a real value in this
+  # file directly would have no effect except leaking it into a plaintext
+  # ConfigMap; use secrets.forensicDsn instead.
+  forensic_dsn: ""
 
   redis:
     addr: "aegis-redis:6379"
+    # Always "" here — populated at runtime via AEGIS_REDIS_PASSWORD (see
+    # secrets.redisPassword above); same force-blanked-in-ConfigMap treatment
+    # as forensic_dsn.
     password: ""
     db: 0
 
@@ -89,7 +103,6 @@ gateway:
       enabled: true
       requests: 100
       window: 60s
-      burst_limit: 20
     waf:
       enabled: true
       block_mode: true

@@ -22,4 +22,9 @@ COPY --from=webbuild /site/dist ./
 USER app
 EXPOSE 8090
 VOLUME ["/data"]
+# No dedicated /health endpoint (this is a static file server, unlike the
+# gateway's Dockerfile which probes :8081/health) — probe the root path,
+# which always serves the built index.html when the server is up.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8090/ >/dev/null 2>&1 || exit 1
 ENTRYPOINT ["aegis-site", "-addr", ":8090", "-dir", "/app", "-out", "/data/pilot-requests.jsonl"]

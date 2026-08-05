@@ -169,6 +169,19 @@ func TestAdmin_BearerWrong(t *testing.T) {
 	}
 }
 
+func TestAdmin_BearerDisabledOnceKillSwitchSet(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	cfg := config.GatewayConfig{AdminAuth: true, AdminSecret: testSecret, AdminBootstrapSecretDisabled: true}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := AdminAuth(cfg, fakeLogger{}, &fakeStore{}, nil)(next)
+	code := doAdmin(h, http.MethodGet, "/api/metrics", func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+testSecret)
+	})
+	if code != http.StatusForbidden {
+		t.Fatalf("bearer secret with kill switch on: got %d, want 403", code)
+	}
+}
+
 func TestAdmin_NoAuth(t *testing.T) {
 	if code := doAdmin(adminHandler(&fakeStore{}), http.MethodGet, "/api/metrics", nil); code != http.StatusUnauthorized {
 		t.Fatalf("no auth: got %d, want 401", code)

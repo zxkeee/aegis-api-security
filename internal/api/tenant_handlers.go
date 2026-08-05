@@ -68,6 +68,7 @@ func (h *handlers) listTenants(w http.ResponseWriter, r *http.Request) {
 	if !h.usersAvailable(w) {
 		return
 	}
+	h.auditCrossTenantRead(r, "cross_tenant_tenants_read", "*")
 	ts, err := h.users.ListTenants(r.Context())
 	if err != nil {
 		h.log.Error("admin: list tenants failed", map[string]any{"error": err.Error()})
@@ -159,6 +160,14 @@ func (h *handlers) listUsers(w http.ResponseWriter, r *http.Request) {
 		// Ordinary admins are pinned to their own tenant regardless of what
 		// they ask for; ignore the query param silently to avoid info leaks.
 		target = tenant.From(r.Context())
+	} else if target != tenant.From(r.Context()) {
+		// Super-admin reading another tenant's (or, when target=="", every
+		// tenant's) user list — the audit trail should show who looked.
+		logTarget := target
+		if logTarget == "" {
+			logTarget = "*"
+		}
+		h.auditCrossTenantRead(r, "cross_tenant_users_read", logTarget)
 	}
 	us, err := h.users.ListUsers(r.Context(), target)
 	if err != nil {

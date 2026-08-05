@@ -82,6 +82,10 @@ jobs:
             [ -n "$id" ] && EID_ARGS+=( -eid "$id" )
           done < tests/dynamic/nuclei-ignore.txt
 
+          # TODO(security-audit): pin by digest, e.g.:
+          #   docker pull projectdiscovery/nuclei:v3.11.0 && docker inspect --format='{{index .RepoDigests 0}}' projectdiscovery/nuclei:v3.11.0
+          # Left as a tag pin — resolving the digest needs registry/Docker
+          # daemon access this change was made without.
           docker run --rm --network host -v "$PWD/tests/dynamic:/work" \
             projectdiscovery/nuclei:v3.11.0 \
             -u http://127.0.0.1:8081 \

@@ -250,12 +250,17 @@ func main() {
 	}
 	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore, ssoIface)
 
-	// FIX SEC: Protect admin API against brute force and DDoS
+	// FIX SEC: Protect admin API against brute force and DDoS.
+	// This is a fixed-window counter (5 requests/second, enforced atomically
+	// in internal/store), not a token bucket — there is no separate "burst"
+	// allowance above this rate. A prior burst_limit field here was dead
+	// config that the limiter never actually read; removed rather than kept
+	// as a misleading knob. If a real token-bucket burst allowance is wanted
+	// later, it needs a new Lua script in internal/store, not just this field.
 	adminRateLimit := config.RateLimitConfig{
-		Enabled:    true,
-		Requests:   5,
-		Window:     time.Second,
-		BurstLimit: 10,
+		Enabled:  true,
+		Requests: 5,
+		Window:   time.Second,
 	}
 
 	if !cfg.AdminAuth {

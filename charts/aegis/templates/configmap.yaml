@@ -5,5 +5,19 @@ metadata:
   labels:
     {{- include "aegis.labels" . | nindent 4 }}
 data:
+  # gateway.redis.password and gateway.forensic_dsn are always sourced from
+  # AEGIS_REDIS_PASSWORD / AEGIS_FORENSIC_DSN env vars (Secret-backed, see
+  # deployment.yaml + secret.yaml) — internal/config's applyEnvOverrides
+  # takes those over anything in this file. They are force-blanked below
+  # rather than trusted to stay empty in .Values.gateway: an operator who
+  # follows the natural values.yaml shape and sets a real password or DSN
+  # directly (instead of secrets.redisPassword/secrets.forensicDsn) would
+  # otherwise get it persisted into this plaintext, RBAC-only-protected
+  # ConfigMap — no Secret involved at all.
   gateway.yaml: |
-    {{- .Values.gateway | toYaml | nindent 4 }}
+    {{- $gw := deepCopy .Values.gateway }}
+    {{- $_ := set $gw "forensic_dsn" "" }}
+    {{- if hasKey $gw "redis" }}
+    {{- $_ := set (index $gw "redis") "password" "" }}
+    {{- end }}
+    {{- $gw | toYaml | nindent 4 }}

@@ -103,6 +103,47 @@ func TestValidate_RejectsInvalidTrustedProxy(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsInvalidIPGuardWhitelistEntry(t *testing.T) {
+	c := validBase()
+	c.Security.IPGuard.Whitelist = []string{"not-an-ip-or-cidr"}
+	if err := Validate(c); err == nil {
+		t.Fatal("invalid ip_guard.whitelist entry must be rejected")
+	}
+}
+
+func TestValidate_RejectsInvalidIPGuardBlacklistEntry(t *testing.T) {
+	c := validBase()
+	c.Security.IPGuard.Blacklist = []string{"999.999.999.999"}
+	if err := Validate(c); err == nil {
+		t.Fatal("invalid ip_guard.blacklist entry must be rejected")
+	}
+}
+
+func TestValidate_AcceptsIPGuardCIDREntries(t *testing.T) {
+	c := validBase()
+	c.Security.IPGuard.Whitelist = []string{"10.0.0.0/8", "192.168.1.1"}
+	c.Security.IPGuard.Blacklist = []string{"2001:db8::/32"}
+	if err := Validate(c); err != nil {
+		t.Fatalf("valid CIDR/IP entries should be accepted: %v", err)
+	}
+}
+
+func TestValidate_RejectsRegistryEnabled(t *testing.T) {
+	c := validBase()
+	c.Registry.Enabled = true
+	if err := Validate(c); err == nil {
+		t.Fatal("registry.enabled: true must be rejected — ServiceAuth is not wired into the request path")
+	}
+}
+
+func TestValidate_AcceptsRegistryDisabled(t *testing.T) {
+	c := validBase()
+	c.Registry.Enabled = false
+	if err := Validate(c); err != nil {
+		t.Fatalf("registry.enabled: false should be accepted: %v", err)
+	}
+}
+
 func TestValidate_JWTSecretRequiredWithoutJWKS(t *testing.T) {
 	c := validBase()
 	c.Security.Auth.Enabled = true

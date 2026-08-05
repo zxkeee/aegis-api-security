@@ -21,10 +21,27 @@ import (
 // operator who fat-fingered their password but well below the rate a credential
 // stuffer would need. The counter only increments on FAILURE; a successful
 // login does not consume budget.
+//
+// accountBruteforceLimit/Window is the SAME budget applied per (tenant,email)
+// instead of per-IP. The per-IP gate alone does not stop a distributed
+// attacker (botnet / residential proxy pool) targeting one known account:
+// each guess can arrive from a fresh IP and never trips the IP counter. This
+// second, independent gate closes that gap regardless of how many source IPs
+// are used.
 const (
 	loginBruteforceLimit  = 8
 	loginBruteforceWindow = 5 * time.Minute
+
+	accountBruteforceLimit  = 8
+	accountBruteforceWindow = 5 * time.Minute
 )
+
+// accountLoginKey builds the per-account brute-force counter key. Email is
+// lower-cased to match VerifyPassword's case-insensitive lookup, so
+// "User@x.com" and "user@x.com" share one budget rather than doubling it.
+func accountLoginKey(tenantID, email string) string {
+	return "loginfail:acct:" + tenantID + ":" + strings.ToLower(strings.TrimSpace(email))
+}
 
 // randToken returns a cryptographically random hex token.
 func randToken() (string, error) {
@@ -124,6 +141,18 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		if tid == "" {
 			tid = tenant.Default
 		}
+		// Per-account brute-force gate, independent of the per-IP one above.
+		// Same atomic-reserve-before-work pattern: a distributed attacker
+		// rotating source IPs against this one account still exhausts this
+		// budget, since it's keyed by (tenant, email) rather than IP.
+		acctKey := accountLoginKey(tid, req.Email)
+		an, aerr := h.store.IncrRate(r.Context(), acctKey, accountBruteforceWindow)
+		if aerr == nil && an > int64(accountBruteforceLimit) {
+			h.store.IncrMetric(r.Context(), "blocked_admin_login_throttled_account")
+			w.Header().Set("Retry-After", strconv.Itoa(int(accountBruteforceWindow.Seconds())))
+			writeError(w, http.StatusTooManyRequests, "too many failed login attempts for this account; try again later")
+			return
+		}
 		u, err := h.users.VerifyPassword(r.Context(), tid, req.Email, req.Password)
 		if err != nil || u.ID == "" {
 			// Same error string regardless of cause: do not reveal whether the
@@ -133,6 +162,9 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 			fail("password", tid)
 			return
 		}
+		// Credentials checked out: refund the account slot too (mirrors the
+		// per-IP refund below), so a successful login never spends either budget.
+		h.store.DecrRate(r.Context(), acctKey)
 		sess = iam.Session{
 			TenantID:   u.TenantID,
 			Role:       u.Role,
